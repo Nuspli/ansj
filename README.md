@@ -2,11 +2,11 @@
 
 ## DISCLAIMER
 
-Do not trust my code. Do not use this unless you've extensively reviewed the code and understand what it does. This is a personal project and I am not responsible for any damage caused by it. (In fact, while developing this, I accidentally deleted half of my file system). I am neither a security expert, nor an experienced C programmer. This is a learning project to better understand modern sandboxing techniques.
+Do not trust my code, it's probably not secure. Do not use this unless you've extensively reviewed the code and understand what it does. This is a personal project and I am not responsible for any damage caused by it. (In fact, while developing this, I accidentally deleted half of my file system). I am neither a security expert, nor an experienced C programmer. This is a learning project to better understand modern sandboxing techniques.
 
 ## About
 
-Lightweight network service jailer.
+Lightweight? network service jailer.
 Intended for hosting MULTIPLE pwn ctf challenges on a single port.
 For more information including the required setup and config format, see [setup](#setup) section.
 
