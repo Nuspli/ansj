@@ -7,10 +7,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <string.h>
-#include <time.h>
 #include <errno.h>
-#include <assert.h>
-#include <libgen.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
@@ -19,24 +16,15 @@
 #include <sys/mman.h>
 #include <sys/ioctl.h>
 #include <sys/sendfile.h>
-#include <sys/prctl.h>
-#include <sys/personality.h>
-#include <arpa/inet.h>
-
 #include <sys/syscall.h>
 #include <sys/mount.h>
 #include <dirent.h>
-#include <limits.h>
-#include <sched.h>
 #include <grp.h>
 #include <pwd.h>
-
+#include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/resource.h>
-
 #include <pthread.h>
-#include <sys/prctl.h>
-#include <linux/securebits.h>
 
 // part of libcap!, link with -lcap
 #include <sys/capability.h>
