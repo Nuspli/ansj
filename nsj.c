@@ -340,7 +340,7 @@ void enter_jail(size_t tmpfs_size) {
     strcpy(old_file_to_exec, old_challenge_dir_path);
     strcat(old_file_to_exec, "/");
     strcat(old_file_to_exec, file_in_dir_to_exec);
-    // example: /old/cwd/challenges/default/default
+    // example: /old/cwd/challenges/default/init
 
     char new_challenge_dir_path[PATH_MAX] = {0};
     strcpy(new_challenge_dir_path, challenge_dir_path_in_jail);
@@ -350,7 +350,7 @@ void enter_jail(size_t tmpfs_size) {
     strcpy(new_file_to_exec, new_challenge_dir_path);
     strcat(new_file_to_exec, "/");
     strcat(new_file_to_exec, file_in_dir_to_exec);
-    // example: /challenge/default
+    // example: /challenge/init
 
     debug(puts("splitting off into a different mount namespace ..."));
     if (unshare(CLONE_NEWNS|CLONE_NEWPID|CLONE_NEWNET) == -1) errExit("unshare");
