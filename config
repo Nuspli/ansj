@@ -1,0 +1,3 @@
+:bash:default:init:120:/challenge:list:suid:copy:
+:bof:unpriv_bof_example:bof:30:/challenge:nolist:nosuid:nocopy:
+:rootshell:rootshell_example:root:600:/challenge:nolist:suid:copy:
