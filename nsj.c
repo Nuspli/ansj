@@ -29,6 +29,14 @@
 // part of libcap!, link with -lcap
 #include <sys/capability.h>
 
+#ifdef DEBUG
+    #define debug(code) code
+#else
+    #define debug(code)
+#endif
+#define errExit(msg) do {perror(msg); exit(EXIT_FAILURE);} while (0)
+#define nitems(arr) (sizeof(arr) / sizeof(arr[0]))
+
 struct linux_dirent64 {
     unsigned long long d_ino;
     unsigned long long d_off;
@@ -37,13 +45,38 @@ struct linux_dirent64 {
     char d_name[];
 };
 
-#ifdef DEBUG
-    #define debug(code) code
-#else
-    #define debug(code)
-#endif
-#define errExit(msg) do {perror(msg); exit(EXIT_FAILURE);} while (0)
-#define nitems(arr) (sizeof(arr) / sizeof(arr[0]))
+struct config {
+    int family;
+    union {
+        struct in6_addr ipv6;
+        struct in_addr ipv4;
+    } addr;
+    in_port_t port;
+    bool in, out, err;
+    struct {
+        bool set;
+        rlim_t lim;
+    } cpu, mem, proc;
+    int conn;
+    size_t fss;
+};
+
+#define MAX_IPS 512
+#define NOSPACE 1
+#define EXCEEDED 2
+
+struct ip_entry {
+    char ip[INET6_ADDRSTRLEN];
+    int connection_count;
+};
+
+struct ip_table {
+    struct ip_entry entries[MAX_IPS];
+    pthread_mutex_t lock;
+};
+
+struct ip_table *ip_map;
+char glob_ip[INET6_ADDRSTRLEN];
 
 void close_open_fds() {
 
@@ -511,22 +544,6 @@ void help(int st, char **argv) {
     exit(st);
 }
 
-struct config {
-    int family;
-    union {
-        struct in6_addr ipv6;
-        struct in_addr ipv4;
-    } addr;
-    in_port_t port;
-    bool in, out, err;
-    struct {
-        bool set;
-        rlim_t lim;
-    } cpu, mem, proc;
-    int conn;
-    size_t fss;
-};
-
 void parse_args(size_t argc, char **argv, struct config *cfg) {
 
 #define ARG_YESNO(S, L, V) \
@@ -576,28 +593,11 @@ void parse_args(size_t argc, char **argv, struct config *cfg) {
 #undef ARG_NUM
 }
 
-#define MAX_IPS 512
-
-struct ip_entry {
-    char ip[INET6_ADDRSTRLEN];
-    int connection_count;
-};
-
-struct ip_table {
-    struct ip_entry entries[MAX_IPS];
-    pthread_mutex_t lock;
-};
-
-struct ip_table *ip_map;
-
 void init_ip_table() {
     // MAP_ANONYMOUS will zero the memory
     ip_map = mmap(NULL, sizeof(struct ip_table), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     pthread_mutex_init(&ip_map->lock, NULL);
 }
-
-#define NOSPACE 1
-#define EXCEEDED 2
 
 int increment_connection(const char *ip, struct config *cf) {
     int r = NOSPACE;
@@ -674,7 +674,6 @@ int bind_listen(struct config const cfg) {
     return lsock;
 }
 
-char glob_ip[INET6_ADDRSTRLEN];
 void cleanup() {
     debug(fprintf(stderr, "cleaning up connection ...\n"));
     decrement_connection(glob_ip);
