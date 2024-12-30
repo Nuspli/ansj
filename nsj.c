@@ -59,6 +59,16 @@ struct config {
     } cpu, mem, proc;
     int conn;
     size_t fss;
+
+    struct {
+        char *dirname_in_challenges;
+        char *file_in_dir_to_exec;
+        char *timeout;
+        char *challenge_dir_path_in_jail;
+        bool display_keys;
+        bool suid;
+        bool copy;
+    } cfg_file;
 };
 
 #define MAX_IPS 512
@@ -249,8 +259,9 @@ void timeout_handler(int sig) {
 
 int CTFUID;
 char *cwd;
+int MAXTIME;
 
-void enter_jail(size_t tmpfs_size) {
+void parse_config_file(struct config *cfg) {
 
     printf("enter the challenge key: ");
     char key[0x100];
@@ -267,16 +278,8 @@ void enter_jail(size_t tmpfs_size) {
     size_t len = 0;
     char *line = NULL;
 
-    char *dirname_in_challenges = NULL;
-    char *file_in_dir_to_exec = NULL;
-    char *timeout = NULL;
-    char *challenge_dir_path_in_jail = NULL;
     bool display_keys = false;
     bool found = false;
-
-    bool suid = false;
-    bool copy = false;
-    int MAXTIME;
 
     if (strcmp(key, "help") == 0) {
         puts("this service is probably used to host ctf challenges.");
@@ -288,10 +291,10 @@ void enter_jail(size_t tmpfs_size) {
 
     while ((read = getline(&line, &len, config_fd)) != -1) {
         char *keychall = strtok(line, ":");
-        dirname_in_challenges = strtok(NULL, ":");
-        file_in_dir_to_exec = strtok(NULL, ":");
-        timeout = strtok(NULL, ":");
-        challenge_dir_path_in_jail = strtok(NULL, ":");
+        cfg->cfg_file.dirname_in_challenges = strtok(NULL, ":");
+        cfg->cfg_file.file_in_dir_to_exec = strtok(NULL, ":");
+        cfg->cfg_file.timeout = strtok(NULL, ":");
+        cfg->cfg_file.challenge_dir_path_in_jail = strtok(NULL, ":");
 
         char *list = strtok(NULL, ":");
         if (display_keys && list != NULL && strcmp(list, "list") == 0) puts(keychall);
@@ -299,13 +302,13 @@ void enter_jail(size_t tmpfs_size) {
         if (strcmp(keychall, key) == 0) {
             char *suid_str = strtok(NULL, ":");
             if (suid_str != NULL && strcmp(suid_str, "suid") == 0)
-                suid = true;
+                cfg->cfg_file.suid = true;
 
             char *copy_str = strtok(NULL, ":");
             if (copy_str != NULL && strcmp(copy_str, "copy") == 0)
-                copy = true;
+                cfg->cfg_file.copy = true;
 
-            MAXTIME = atoi(timeout);
+            MAXTIME = atoi(cfg->cfg_file.timeout);
             if (MAXTIME == 0)
                 MAXTIME = 60;
 
@@ -316,7 +319,10 @@ void enter_jail(size_t tmpfs_size) {
 
     if (fclose(config_fd) == EOF) errExit("fclose");
 
-    if (dirname_in_challenges == NULL || file_in_dir_to_exec == NULL || timeout == NULL || challenge_dir_path_in_jail == NULL) {
+    if (cfg->cfg_file.dirname_in_challenges == NULL ||
+        cfg->cfg_file.file_in_dir_to_exec == NULL || 
+        cfg->cfg_file.timeout == NULL ||
+        cfg->cfg_file.challenge_dir_path_in_jail == NULL) {
         puts("error reading config file.");
         exit(EXIT_FAILURE);
     }
@@ -326,6 +332,28 @@ void enter_jail(size_t tmpfs_size) {
         exit(EXIT_FAILURE);
     }
 
+    char temp[PATH_MAX] = {0};
+    strcpy(temp, cwd);
+    strcat(temp, "/challenges/");
+    strcat(temp, cfg->cfg_file.dirname_in_challenges);
+    if (access(temp, F_OK) == -1) {
+        printf("error in config: challenge directory not found: %s\n", temp);
+        exit(EXIT_FAILURE);
+    }
+
+    strcat(temp, "/");
+    strcat(temp, cfg->cfg_file.file_in_dir_to_exec);
+    if (access(temp, F_OK) == -1) {
+        printf("error in config: challenge binary not found: %s\n", temp);
+        exit(EXIT_FAILURE);
+    }
+
+    if (cfg->cfg_file.suid && !cfg->cfg_file.copy)
+        debug(puts("warning: suid binaries should be copied into the jail."));
+}
+
+void enter_jail(struct config *cfg) {
+
     char new_root[] = "/tmp/jail-XXXXXX";
     char old_root[PATH_MAX];
 
@@ -333,23 +361,23 @@ void enter_jail(size_t tmpfs_size) {
     strcpy(old_challenge_dir_path, "/old");
     strcat(old_challenge_dir_path, cwd);
     strcat(old_challenge_dir_path, "/challenges/");
-    strcat(old_challenge_dir_path, dirname_in_challenges);
+    strcat(old_challenge_dir_path, cfg->cfg_file.dirname_in_challenges);
     // example: /old/cwd/challenges/default
 
     char old_file_to_exec[PATH_MAX] = {0};
     strcpy(old_file_to_exec, old_challenge_dir_path);
     strcat(old_file_to_exec, "/");
-    strcat(old_file_to_exec, file_in_dir_to_exec);
+    strcat(old_file_to_exec, cfg->cfg_file.file_in_dir_to_exec);
     // example: /old/cwd/challenges/default/init
 
     char new_challenge_dir_path[PATH_MAX] = {0};
-    strcpy(new_challenge_dir_path, challenge_dir_path_in_jail);
+    strcpy(new_challenge_dir_path, cfg->cfg_file.challenge_dir_path_in_jail);
     // example: /challenge
 
     char new_file_to_exec[PATH_MAX] = {0};
     strcpy(new_file_to_exec, new_challenge_dir_path);
     strcat(new_file_to_exec, "/");
-    strcat(new_file_to_exec, file_in_dir_to_exec);
+    strcat(new_file_to_exec, cfg->cfg_file.file_in_dir_to_exec);
     // example: /challenge/init
 
     debug(puts("splitting off into a different mount namespace ..."));
@@ -364,7 +392,7 @@ void enter_jail(size_t tmpfs_size) {
     if (mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) == -1) errExit("mount");
 
     char size_option[32];
-    snprintf(size_option, sizeof(size_option), "size=%zu", tmpfs_size);
+    snprintf(size_option, sizeof(size_option), "size=%zu", cfg->fss);
 
     debug(puts("... bind-mounting the new root over itself as a tmpfs so that it becomes a 'mount point' for pivot_root() later."));
     if (mount(new_root, new_root, "tmpfs", 0, size_option) == -1) errExit("mount");
@@ -406,7 +434,6 @@ void enter_jail(size_t tmpfs_size) {
     char *p = NULL;
 
     snprintf(temp, sizeof(temp), "%s", new_challenge_dir_path);
-    len = strlen(temp);
 
     for (p = temp + 1; *p; p++) {
         if (*p == '/') {
@@ -419,7 +446,7 @@ void enter_jail(size_t tmpfs_size) {
     if (mkdir(temp, 0755) && errno != EEXIST) errExit("mkdir");
 
     char *exec_path_to_chmod;
-    if (copy) {
+    if (cfg->cfg_file.copy) {
         debug(puts("... copying challenge files into the jail."));
         copy_directory(old_challenge_dir_path, new_challenge_dir_path);
         exec_path_to_chmod = new_file_to_exec;
@@ -431,10 +458,10 @@ void enter_jail(size_t tmpfs_size) {
     }
 
     debug(printf("... changing ownership and permissions of %s ...\n", exec_path_to_chmod));
-    debug(printf("... ... suid: %s.\n", suid ? "true" : "false"));
+    debug(printf("... ... suid: %s.\n", cfg->cfg_file.suid ? "true" : "false"));
     
-    int uid = suid ? 0 : CTFUID;
-    int perms = suid ? 04755 : 0755;
+    int uid = cfg->cfg_file.suid ? 0 : CTFUID;
+    int perms = cfg->cfg_file.suid ? 04755 : 0755;
 
     if (chown(exec_path_to_chmod, uid, uid) == -1) errExit("chown");
     if (chmod(exec_path_to_chmod, perms) == -1) errExit("chmod");
@@ -599,7 +626,7 @@ void init_ip_table() {
     pthread_mutex_init(&ip_map->lock, NULL);
 }
 
-int increment_connection(const char *ip, struct config *cf) {
+int increment_connection(const char *ip, struct config *cfg) {
     int r = NOSPACE;
     pthread_mutex_lock(&ip_map->lock);
     for (int i = 0; i < MAX_IPS; i++) {
@@ -610,7 +637,7 @@ int increment_connection(const char *ip, struct config *cf) {
             break;
         }
         if (strcmp(ip_map->entries[i].ip, ip) == 0) {
-            if (ip_map->entries[i].connection_count >= cf->conn) {
+            if (ip_map->entries[i].connection_count >= cfg->conn) {
                 r = EXCEEDED;
                 break;
             }
@@ -679,7 +706,7 @@ void cleanup() {
     decrement_connection(glob_ip);
 }
 
-void handle_connection(struct config const cfg, int sock) {
+void handle_connection(struct config cfg, int sock) {
 
     debug(puts("installing exit handler ..."));
     if (atexit(cleanup) != 0) errExit("atexit");
@@ -714,7 +741,8 @@ void handle_connection(struct config const cfg, int sock) {
     if (cfg.err && fileno(stderr) != dup2(sock, fileno(stderr))) errExit("dup2");
     if (close(sock)) errExit("close");
 
-    enter_jail(cfg.fss);
+    parse_config_file(&cfg);
+    enter_jail(&cfg);
     exit(0);
 }
 
