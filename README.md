@@ -71,7 +71,7 @@ To use **namespaces** and **capabilities**, the program must be run as root. The
 
 The ynetd based server keeps accepting connections and applies ressource limits. Each connection will then prompt for a key and time out after 5 seconds if no key is entered. The config line containing the key (if it exists) will be parsed.
 
-The jail is created in a new mount namespace that doesn't share the pid and network namespaces with the host. This means the jailed process can't access the host's network or processes. The new pid namespace is important as it prohibits a sandbox escape via setns to the host's pid namespace.
+The jail is created in a new mount namespace that doesn't share the pid and network namespaces with the host. This means the jailed process can't access the host's network or processes. The new pid namespace along with a fresh /proc mount is important as it prohibits a sandbox escape via setns to the host's pid namespace.
 
 To isolate the filesystem, a jail directory is created in `/tmp/jail-XXXXXX` (where XXXXXX are random characters). This directory is mounted as a `tmpfs` filesystem. This means that all files created in the jail are backed by a controllable memory. Memory r/w is also very fast. The size of the tmpfs is limited to `256KiB` by default. This is to prevent the jailed process from consuming all the host's memory. A `pivot_root` syscall is performed to make the jail directory the new root. All references to `/` will now actually point to `/tmp/jail-XXXXXX`.
 
