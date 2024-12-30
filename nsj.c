@@ -236,7 +236,7 @@ void drop_capabilities() {
         CAP_WAKE_ALARM
     };
 
-    debug(puts("... ... removing most capabilities."));
+    debug(puts("... ... removing most capabilities from bounding set."));
     for (int i = 0; i < nitems(cap_list); i++) {
         if (cap_drop_bound(cap_list[i]) == -1) errExit("cap_drop_bound");
     }
