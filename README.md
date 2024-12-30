@@ -24,7 +24,7 @@ For more information including the required setup and config format, see [setup]
   -p <port> : TCP port to bind to (default 1024)
   -si [y/n] : use socket as stdin? (default y)
   -so [y/n] : use socket as stdout? (default y)
-  -se [y/n] : use socket as stderr? (default n)
+  -se [y/n] : use socket as stderr? (default y)
   -lt <lim> : limit cpu time in seconds (default unchanged)
   -lm <lim> : limit amount of memory in bytes (default unchanged)
   -lp <lim> : limit number of processes (default unchanged)

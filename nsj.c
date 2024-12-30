@@ -566,7 +566,7 @@ void help(int st, char **argv) {
     puts("  -lt <lim> : limit cpu time in seconds (default unchanged)");
     puts("  -lm <lim> : limit amount of memory in bytes (default unchanged)");
     puts("  -lp <lim> : limit number of processes (default unchanged)");
-    puts("  -lc <lim> : limit number of concurrent connections per ip (default 1)\n");
+    puts("  -lc <lim> : limit number of concurrent connections per ip (default 1)");
     puts("  -lf <lim> : limit size of tmpfs in bytes (default 262144 aka 256KiB)\n");
     exit(st);
 }
