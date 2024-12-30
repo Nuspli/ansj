@@ -46,7 +46,7 @@ Every line in the config must follow the format:
 
 | Field | Description |
 | --- | --- |
-| **key** | the unique key associated with the challenge. CANNOT BE "help" OR CONTAIN ":", " ". |
+| **key** | the unique key associated with the challenge. CANNOT BE "help" OR CONTAIN ":", "[space]". |
 | **dirname_in_challenges** | the name of the directory in ./challenges that contains the challenge files. |
 | **file_in_dir_to_exec** | the name of the file in dirname_in_challenges that will be executed in the jail. |
 | **timeout_in_seconds** | the time in seconds after which the jail will be destroyed. |
