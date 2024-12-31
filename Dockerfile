@@ -18,4 +18,6 @@ COPY nsj .
 COPY config .
 
 EXPOSE 31337
+
+RUN chmod +x nsj
 CMD ./nsj -p 31337 -lp 1024
