@@ -1,5 +1,4 @@
-# sudo docker build -t ansj .
-# sudo docker run --privileged -d -p 31337:31337 --rm -it ansj
+# Here is an example of how you might integrate the nsj with Docker.
 
 FROM ubuntu
 
@@ -21,3 +20,6 @@ EXPOSE 31337
 
 RUN chmod +x nsj
 CMD ./nsj -p 31337 -lp 1024
+
+# sudo docker build -t ansj .
+# sudo docker run --privileged -d -p 31337:31337 --rm -it ansj
