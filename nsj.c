@@ -690,7 +690,7 @@ int bind_listen(struct config const cfg) {
         addr_len = sizeof(addr.ipv4);
         break;
     default:
-        fprintf(stderr, "bad address family?!\n");
+        puts("bad address family?!\n");
         exit(-1);
     }
 
@@ -702,7 +702,7 @@ int bind_listen(struct config const cfg) {
 }
 
 void cleanup() {
-    debug(fprintf(stderr, "cleaning up connection ...\n"));
+    debug(puts("cleaning up connection ..."));
     decrement_connection(glob_ip);
 }
 
@@ -743,7 +743,7 @@ void handle_connection(struct config cfg, int sock) {
 
     parse_config_file(&cfg);
     enter_jail(&cfg);
-    exit(0);
+    exit(0); // if the jail exits normally, this is caught by atexit -> cleanup
 }
 
 int main(int argc, char **argv, char **envp) {
