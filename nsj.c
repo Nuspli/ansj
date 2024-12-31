@@ -259,7 +259,7 @@ void timeout_handler(int sig) {
 
 int CTFUID;
 char *cwd;
-int MAXTIME;
+int MAXTIME = 0;
 
 void parse_config_file(struct config *cfg) {
 
@@ -308,9 +308,8 @@ void parse_config_file(struct config *cfg) {
             if (copy_str != NULL && strcmp(copy_str, "copy") == 0)
                 cfg->cfg_file.copy = true;
 
-            MAXTIME = atoi(cfg->cfg_file.timeout);
-            if (MAXTIME == 0)
-                MAXTIME = 60;
+            if (cfg->cfg_file.timeout != NULL)
+                MAXTIME = atoi(cfg->cfg_file.timeout);
 
             found = true;
             break;
@@ -318,24 +317,26 @@ void parse_config_file(struct config *cfg) {
     }
 
     if (fclose(config_fd) == EOF) errExit("fclose");
+        if (!found) {
+        if (!display_keys) puts("challenge not found. try 'help' if you don't know the key.");
+        exit(EXIT_FAILURE);
+    }
 
     if (cfg->cfg_file.dirname_in_challenges == NULL ||
         cfg->cfg_file.file_in_dir_to_exec == NULL || 
         cfg->cfg_file.timeout == NULL ||
         cfg->cfg_file.challenge_dir_path_in_jail == NULL) {
-        puts("error reading config file.");
+        printf("error in config: line with key \"%s\" not formatted correctly.\n", key);
         exit(EXIT_FAILURE);
     }
 
-    if (!found) {
-        if (!display_keys) puts("challenge not found. try 'help' if you don't know the key.");
+    if (MAXTIME == 0) {
+        printf("error in config: timeout cannot be %s\n", cfg->cfg_file.timeout);
         exit(EXIT_FAILURE);
     }
 
     char temp[PATH_MAX] = {0};
-    strcpy(temp, cwd);
-    strcat(temp, "/challenges/");
-    strcat(temp, cfg->cfg_file.dirname_in_challenges);
+    snprintf(temp, sizeof(temp), "%s/challenges/%s", cwd, cfg->cfg_file.dirname_in_challenges);
     if (access(temp, F_OK) == -1) {
         printf("error in config: challenge directory not found: %s\n", temp);
         exit(EXIT_FAILURE);
@@ -348,6 +349,16 @@ void parse_config_file(struct config *cfg) {
         exit(EXIT_FAILURE);
     }
 
+    if (*(cfg->cfg_file.challenge_dir_path_in_jail) != '/') {
+        printf("error in config: challenge directory path in jail must be absolute: %s\n", cfg->cfg_file.challenge_dir_path_in_jail);
+        exit(EXIT_FAILURE);
+    }
+
+    if (strlen(cfg->cfg_file.challenge_dir_path_in_jail) > PATH_MAX) {
+        printf("error in config: challenge directory path in jail too long: %s\n", cfg->cfg_file.challenge_dir_path_in_jail);
+        exit(EXIT_FAILURE);
+    }
+
     if (cfg->cfg_file.suid && !cfg->cfg_file.copy)
         debug(puts("warning: suid binaries should be copied into the jail."));
 }
@@ -357,27 +368,16 @@ void enter_jail(struct config *cfg) {
     char new_root[] = "/tmp/jail-XXXXXX";
     char old_root[PATH_MAX];
 
-    char old_challenge_dir_path[PATH_MAX] = {0};
-    strcpy(old_challenge_dir_path, "/old");
-    strcat(old_challenge_dir_path, cwd);
-    strcat(old_challenge_dir_path, "/challenges/");
-    strcat(old_challenge_dir_path, cfg->cfg_file.dirname_in_challenges);
+    char old_challenge_dir_path[PATH_MAX-2] = {0};
+    snprintf(old_challenge_dir_path, sizeof(old_challenge_dir_path), "/old%s/challenges/%s", cwd, cfg->cfg_file.dirname_in_challenges);
     // example: /old/cwd/challenges/default
 
     char old_file_to_exec[PATH_MAX] = {0};
-    strcpy(old_file_to_exec, old_challenge_dir_path);
-    strcat(old_file_to_exec, "/");
-    strcat(old_file_to_exec, cfg->cfg_file.file_in_dir_to_exec);
+    snprintf(old_file_to_exec, sizeof(old_file_to_exec), "%s/%s", old_challenge_dir_path, cfg->cfg_file.file_in_dir_to_exec);
     // example: /old/cwd/challenges/default/init
 
-    char new_challenge_dir_path[PATH_MAX] = {0};
-    strcpy(new_challenge_dir_path, cfg->cfg_file.challenge_dir_path_in_jail);
-    // example: /challenge
-
     char new_file_to_exec[PATH_MAX] = {0};
-    strcpy(new_file_to_exec, new_challenge_dir_path);
-    strcat(new_file_to_exec, "/");
-    strcat(new_file_to_exec, cfg->cfg_file.file_in_dir_to_exec);
+    snprintf(new_file_to_exec, sizeof(new_file_to_exec), "%s/%s", cfg->cfg_file.challenge_dir_path_in_jail, cfg->cfg_file.file_in_dir_to_exec);
     // example: /challenge/init
 
     debug(puts("splitting off into a different mount namespace ..."));
@@ -403,6 +403,7 @@ void enter_jail(struct config *cfg) {
 
     debug(puts("... obtaining a file descriptor for the old root directory ..."));
     int cleanup_dirfd = open("/", O_DIRECTORY);
+    if (cleanup_dirfd == -1) errExit("open");
     debug(printf("... ... obtained file descriptor %d for the old root directory.\n", cleanup_dirfd));
 
     // after this, / will refer to /tmp/jail-XXXXXX, and /old will refer to the old root filesystem
@@ -433,7 +434,7 @@ void enter_jail(struct config *cfg) {
     char temp[4096];
     char *p = NULL;
 
-    snprintf(temp, sizeof(temp), "%s", new_challenge_dir_path);
+    snprintf(temp, sizeof(temp), "%s", cfg->cfg_file.challenge_dir_path_in_jail);
 
     for (p = temp + 1; *p; p++) {
         if (*p == '/') {
@@ -448,12 +449,12 @@ void enter_jail(struct config *cfg) {
     char *exec_path_to_chmod;
     if (cfg->cfg_file.copy) {
         debug(puts("... copying challenge files into the jail."));
-        copy_directory(old_challenge_dir_path, new_challenge_dir_path);
+        copy_directory(old_challenge_dir_path, cfg->cfg_file.challenge_dir_path_in_jail);
         exec_path_to_chmod = new_file_to_exec;
     } else {
-        debug(printf("... bind-mounting (read-only) %s into %s in the jail.\n", old_challenge_dir_path, new_challenge_dir_path));
-        if (mount(old_challenge_dir_path, new_challenge_dir_path, NULL, MS_BIND|MS_RDONLY, NULL) == -1) errExit("mount");
-        if (mount(NULL, new_challenge_dir_path, NULL, MS_REMOUNT|MS_BIND|MS_RDONLY, NULL) == -1) errExit("mount");
+        debug(printf("... bind-mounting (read-only) %s into %s in the jail.\n", old_challenge_dir_path, cfg->cfg_file.challenge_dir_path_in_jail));
+        if (mount(old_challenge_dir_path, cfg->cfg_file.challenge_dir_path_in_jail, NULL, MS_BIND|MS_RDONLY, NULL) == -1) errExit("mount");
+        if (mount(NULL, cfg->cfg_file.challenge_dir_path_in_jail, NULL, MS_REMOUNT|MS_BIND|MS_RDONLY, NULL) == -1) errExit("mount");
         exec_path_to_chmod = old_file_to_exec;
     }
 
@@ -476,7 +477,7 @@ void enter_jail(struct config *cfg) {
     if (chown("/home/ctf", CTFUID, CTFUID) == -1) errExit("chown");
 
     debug(puts("moving the current working directory into the jail."));
-    if (chdir(new_challenge_dir_path) != 0) errExit("chdir");
+    if (chdir(cfg->cfg_file.challenge_dir_path_in_jail) != 0) errExit("chdir");
 
     if (chmod("/", 0755) == -1) errExit("chmod"); // I forgot why I have this here, but it's probably important.
 
