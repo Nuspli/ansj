@@ -91,7 +91,7 @@ Finally, the challenge process is spawned. Root privileges are dropped and heavi
 sudo apt install libcap-dev
 ```
 
-If any of the capability functions fail, make sure you check your kernel version supports them. Link against `libcap` with `-lcap`.
+If any of the capability functions fail, make sure you check your kernel supports them. Link against `libcap` with `-lcap`.
 
 ```bash
 gcc nsj.c -o nsj -lcap
