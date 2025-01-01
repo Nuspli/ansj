@@ -533,7 +533,6 @@ void enter_jail(struct config *cfg) {
         if (chdir("/") == -1) errExit("chdir"); // this is /tmp/jail-XXXXXX, not the real root.
         delete_directory(".");
 
-        debug(puts("... removing jail directory."));
         char *rel_pathname = (char *)new_root + 1;
         debug(printf("... removing jail directory at %s relative to dirfd %d\n", rel_pathname, cleanup_dirfd));
         if (unlinkat(cleanup_dirfd, rel_pathname, AT_REMOVEDIR) == -1) errExit("unlinkat");
@@ -786,14 +785,23 @@ int main(int argc, char **argv, char **envp) {
     init_ip_table();
 
     while (1) {
-        struct sockaddr addr;
+        struct sockaddr_storage addr;
         socklen_t addrlen = sizeof(addr);
-        if (0 > (sock = accept(lsock, &addr, &addrlen))) continue;
 
-        debug(printf("connection from %s\n", inet_ntoa(((struct sockaddr_in *)&addr)->sin_addr)));
+        if (0 > (sock = accept(lsock, (struct sockaddr *)&addr, &addrlen))) continue;
 
-        // make sure we're not exceeding connections per ip limit. drop connection if we are.
-        if (inet_ntop(AF_INET, &((struct sockaddr_in *)&addr)->sin_addr, glob_ip, sizeof(glob_ip)) == NULL) errExit("inet_ntop");
+        if (addr.ss_family == AF_INET) {
+            struct sockaddr_in *addr_in = (struct sockaddr_in *)&addr;
+            if (inet_ntop(AF_INET, &(addr_in->sin_addr), glob_ip, sizeof(glob_ip)) == NULL) errExit("inet_ntop");
+        } else if (addr.ss_family == AF_INET6) {
+            struct sockaddr_in6 *addr_in6 = (struct sockaddr_in6 *)&addr;
+            if (inet_ntop(AF_INET6, &(addr_in6->sin6_addr), glob_ip, sizeof(glob_ip)) == NULL) errExit("inet_ntop");
+        } else {
+            continue;
+        }
+
+        debug(printf("connection from %s\n", glob_ip));
+
         int r = increment_connection(glob_ip, &cfg);
         if (r == EXCEEDED) {
             debug(puts("dropped. too many connections from this ip."));
