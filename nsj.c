@@ -35,6 +35,7 @@
     #define debug(code)
 #endif
 #define errExit(msg) do {perror(msg); exit(EXIT_FAILURE);} while (0)
+#define printfExit(fmt, ...) do {printf(fmt, ##__VA_ARGS__); exit(EXIT_FAILURE);} while (0)
 #define nitems(arr) (sizeof(arr) / sizeof(arr[0]))
 
 struct linux_dirent64 {
@@ -87,6 +88,10 @@ struct ip_table {
 
 struct ip_table *ip_map;
 char glob_ip[INET6_ADDRSTRLEN];
+
+int CTFUID;
+char *cwd;
+int MAXTIME = 0;
 
 void close_open_fds() {
 
@@ -254,12 +259,8 @@ void drop_capabilities() {
 
 void timeout_handler(int sig) {
     puts("timeout!");
-    exit(EXIT_FAILURE);
+    exit(0);
 }
-
-int CTFUID;
-char *cwd;
-int MAXTIME = 0;
 
 void parse_config_file(struct config *cfg) {
 
@@ -290,44 +291,44 @@ void parse_config_file(struct config *cfg) {
     }
 
     while ((read = getline(&line, &len, config_fd)) != -1) {
+
         char *keychall = strtok(line, ":");
         cfg->cfg_file.dirname_in_challenges = strtok(NULL, ":");
         cfg->cfg_file.file_in_dir_to_exec = strtok(NULL, ":");
         cfg->cfg_file.timeout = strtok(NULL, ":");
         cfg->cfg_file.challenge_dir_path_in_jail = strtok(NULL, ":");
-
         char *list = strtok(NULL, ":");
+        
         if (display_keys && list != NULL && strcmp(list, "list") == 0) puts(keychall);
 
-        if (strcmp(keychall, key) == 0) {
+        if (keychall != NULL && strcmp(keychall, key) == 0) {
+
             char *suid_str = strtok(NULL, ":");
-            if (suid_str != NULL && strcmp(suid_str, "suid") == 0)
-                cfg->cfg_file.suid = true;
-
             char *copy_str = strtok(NULL, ":");
-            if (copy_str != NULL && strcmp(copy_str, "copy") == 0)
-                cfg->cfg_file.copy = true;
 
-            if (cfg->cfg_file.timeout != NULL)
-                MAXTIME = atoi(cfg->cfg_file.timeout);
+            if (cfg->cfg_file.dirname_in_challenges == NULL) printfExit("error in config: missing dirname_in_challenges.\n");
+            if (cfg->cfg_file.file_in_dir_to_exec == NULL) printfExit("error in config: missing file_in_dir_to_exec.\n");
+            if (cfg->cfg_file.timeout == NULL) printfExit("error in config: missing timeout.\n");
+            if (cfg->cfg_file.challenge_dir_path_in_jail == NULL) printfExit("error in config: missing challenge_dir_path_in_jail.\n");
+            if (list == NULL) printfExit("error in config: missing list.\n");
+            if (suid_str == NULL) printfExit("error in config: missing suid.\n");
+            if (copy_str == NULL) printfExit("error in config: missing copy.\n");
+
+            if (strcmp(suid_str, "suid") == 0) cfg->cfg_file.suid = true;
+            if (strcmp(copy_str, "copy") == 0) cfg->cfg_file.copy = true;
+            MAXTIME = atoi(cfg->cfg_file.timeout);
 
             found = true;
             break;
         }
     }
 
+    // do not free line. ptrs created by strtok still use it.
+
     if (fclose(config_fd) == EOF) errExit("fclose");
         if (!found) {
         if (!display_keys) puts("challenge not found. try 'help' if you don't know the key.");
-        exit(EXIT_FAILURE);
-    }
-
-    if (cfg->cfg_file.dirname_in_challenges == NULL ||
-        cfg->cfg_file.file_in_dir_to_exec == NULL || 
-        cfg->cfg_file.timeout == NULL ||
-        cfg->cfg_file.challenge_dir_path_in_jail == NULL) {
-        printf("error in config: line with key \"%s\" not formatted correctly.\n", key);
-        exit(EXIT_FAILURE);
+        exit(0);
     }
 
     if (MAXTIME == 0) {
@@ -691,7 +692,7 @@ int bind_listen(struct config const cfg) {
         break;
     default:
         puts("bad address family?!\n");
-        exit(-1);
+        exit(1);
     }
 
     if (bind(lsock, (struct sockaddr *) &addr, addr_len)) errExit("bind");
@@ -701,15 +702,20 @@ int bind_listen(struct config const cfg) {
     return lsock;
 }
 
-void cleanup() {
+void cleanup(int st, void *arg) {
     debug(puts("cleaning up connection ..."));
     decrement_connection(glob_ip);
+    if (st != 0) {
+        printf("jail exited with non-zero status: %d\n", st);
+        puts("stopping server ...");
+        kill(getppid(), SIGKILL);
+    }
 }
 
 void handle_connection(struct config cfg, int sock) {
 
     debug(puts("installing exit handler ..."));
-    if (atexit(cleanup) != 0) errExit("atexit");
+    if (on_exit(cleanup, NULL)) errExit("on_exit");
 
     struct rlimit rlim;
 
@@ -743,7 +749,7 @@ void handle_connection(struct config cfg, int sock) {
 
     parse_config_file(&cfg);
     enter_jail(&cfg);
-    exit(0); // if the jail exits normally, this is caught by atexit -> cleanup
+    exit(0); // jail exits normally
 }
 
 int main(int argc, char **argv, char **envp) {
