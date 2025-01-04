@@ -50,11 +50,10 @@ Every line in the config must follow the format:
 | **dirname_in_challenges** | the name of the directory in ./challenges that contains the challenge files. |
 | **file_in_dir_to_exec** | the name of the file in dirname_in_challenges that will be executed in the jail. |
 | **timeout_in_seconds** | the time in seconds after which the jail will be destroyed. |
-| **challenge_dir_path_in_jail** | the path to the directory in the jail where the challenge files will be accessible. |
+| **challenge_dir_path_in_jail** | the path to the directory in the jail where the challenge files will be accessible. must be absolute. cannot be using /old, /home, /proc, /bin, /lib, /lib64, /usr, /etc, /var, /dev, /sbin. |
 | **list/nolist** | if this value is "list", the key will be listed when the user types "help". |
 | **suid/nosuid** | if this value is "suid", the file_in_dir_to_exec will be made suid root. if copy is not set, this will make the file suid root outside of the jail too. YOU PROBABLY DON'T WANT THIS. USE copy FOR SUID CHALLENGES. |
 | **copy/nocopy** | if this value is "copy", the challenge directory will be copied into the jail instead of bind-mounted. this may be slower for challenges with many files. |
-
 
 ```txt
 DO NOT LEAVE ANY VALUES EMPTY. TO OPT OUT OF list OR suid OR copy, USE "nolist" OR "nosuid" OR "nocopy" OR LITERALLY ANY OTHER STRING. DO NOT DO THIS: 

@@ -326,7 +326,7 @@ void parse_config_file(struct config *cfg) {
     // do not free line. ptrs created by strtok still use it.
 
     if (fclose(config_fd) == EOF) errExit("fclose");
-    
+
     if (!found) {
         if (!display_keys) puts("challenge not found. try 'help' if you don't know the key.");
         exit(0);
@@ -361,6 +361,13 @@ void parse_config_file(struct config *cfg) {
         exit(EXIT_FAILURE);
     }
 
+    // also cannot use /old, /home, /proc, /bin, /lib, /lib64, /usr, /etc, /var, /dev, /sbin
+    // /old would be really bad, everything else will likely error and fail later.
+    if (strstr(cfg->cfg_file.challenge_dir_path_in_jail, "old") != NULL) {
+        printf("error in config: challenge directory path in jail cannot contain \"old\": %s\n", cfg->cfg_file.challenge_dir_path_in_jail);
+        exit(EXIT_FAILURE);
+    }
+
     if (cfg->cfg_file.suid && !cfg->cfg_file.copy)
         debug(puts("warning: suid binaries should be copied into the jail."));
 }
@@ -382,8 +389,8 @@ void enter_jail(struct config *cfg) {
     snprintf(new_file_to_exec, sizeof(new_file_to_exec), "%s/%s", cfg->cfg_file.challenge_dir_path_in_jail, cfg->cfg_file.file_in_dir_to_exec);
     // example: /challenge/init
 
-    debug(puts("splitting off into a different mount namespace ..."));
-    if (unshare(CLONE_NEWNS|CLONE_NEWPID|CLONE_NEWNET) == -1) errExit("unshare");
+    debug(puts("splitting off into different namespace(s) ..."));
+    if (unshare(CLONE_NEWNS|CLONE_NEWPID|CLONE_NEWNET|CLONE_NEWUTS|CLONE_NEWIPC) == -1) errExit("unshare");
 
     debug(puts("creating jail structure ..."));
     debug(puts("... creating jail root ..."));
@@ -396,7 +403,7 @@ void enter_jail(struct config *cfg) {
     char size_option[32];
     snprintf(size_option, sizeof(size_option), "size=%zu", cfg->fss);
 
-    debug(puts("... bind-mounting the new root over itself as a tmpfs so that it becomes a 'mount point' for pivot_root() later."));
+    debug(puts("... bind-mounting the new root over itself as a tmpfs. this will also make it a 'mount point' for pivot_root() later."));
     if (mount(new_root, new_root, "tmpfs", 0, size_option) == -1) errExit("mount");
 
     debug(puts("... creating a directory in which pivot_root will put the old root filesystem."));
