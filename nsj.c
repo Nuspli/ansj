@@ -326,7 +326,8 @@ void parse_config_file(struct config *cfg) {
     // do not free line. ptrs created by strtok still use it.
 
     if (fclose(config_fd) == EOF) errExit("fclose");
-        if (!found) {
+    
+    if (!found) {
         if (!display_keys) puts("challenge not found. try 'help' if you don't know the key.");
         exit(0);
     }
