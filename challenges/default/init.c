@@ -22,7 +22,7 @@ config:
 
 */
 
-int main(int argc, char **argv, char **envp) {
+int main(int argc, char **argv) {
 
     int ctfuid = getuid();
     int ctfgid = getgid();

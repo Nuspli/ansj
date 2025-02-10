@@ -4,7 +4,7 @@
 root shell to test how secure the jail is.
 
 config:
-:rootshell:rootshell_example:bof:120:/challenge:nolist:suid:copy:
+:rootshell:rootshell_example:root:600:/challenge:nolist:suid:copy:
 */
 
 void main() {
