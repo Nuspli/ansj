@@ -16,7 +16,15 @@ EXPOSE 31337
 
 RUN chmod +x nsj
 CMD ["./nsj", "-p", "31337", "-l", "log", "-lp", "1024"]
-# docker exec -it <container> cat /home/ctf/log
 
 # sudo docker build -t ansj .
 # sudo docker run --privileged -d -p 31337:31337 --rm -it ansj
+
+# bash: sudo docker exec -it <container> bash
+# logs: sudo docker exec -it <container> cat /home/ctf/log
+
+# update challenges / config:
+# sudo docker cp challenges/ <container>:/home/ctf/challenges
+# sudo docker cp config <container>:/home/ctf/config
+
+# restart: sudo docker restart <container>

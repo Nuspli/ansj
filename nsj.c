@@ -719,11 +719,11 @@ int bind_listen(struct config const cfg) {
     return lsock;
 }
 
+int infds[2];
 
 void stdin_log() {
     
     int logfd = 1;
-    int infds[2];
     pipe(infds);
 
     if (fork() == 0) {
@@ -743,7 +743,6 @@ void stdin_log() {
             write(logfd, buf, r);
             if (write(infds[1], buf, r) == -1) break;
         }
-        close(infds[1]);
         pause();
     }
 }
@@ -756,11 +755,12 @@ void cleanup(int st, void *arg) {
     if (log_path != NULL) {
         debug(puts("killing stdin log ..."));
         kill(getppid(), SIGKILL);
+        close(infds[1]);
     }
     if (st != 0) {
         printf("jail exited with non-zero status: %d\n", st);
         puts("stopping server ...");
-        kill(server_pid, SIGKILL);
+        kill(server_pid, SIGUSR1);
     }
 }
 
@@ -806,7 +806,14 @@ void handle_connection(struct config cfg, int sock) {
     exit(0); // jail exits normally
 }
 
+void stop_server(int sig) {
+    debug(puts("stopping server ..."));
+    while (1);
+}
+
 int main(int argc, char **argv, char **envp) {
+
+    signal(SIGUSR1, stop_server);
 
     setvbuf(stdin, NULL, _IONBF, 0);
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -886,6 +893,8 @@ int main(int argc, char **argv, char **envp) {
         // child
         if (close(lsock)) errExit("close");
         if (0 > setsid()) errExit("setsid");
+
+        signal(SIGUSR1, SIG_IGN);
 
         handle_connection(cfg, sock);
     }
