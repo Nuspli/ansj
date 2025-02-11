@@ -1,6 +1,6 @@
 # ansj - a network service jailer
 
-## DISCLAIMER
+## WARNING
 
 Do not trust my code, it's probably not secure. Do not use this unless you've extensively reviewed the code and understand what it does. This is a personal project and I am not responsible for any damage caused by it. (In fact, while developing this, I accidentally deleted half of my file system). I am neither a security expert, nor an experienced C programmer. This is a learning project to better understand modern sandboxing techniques.
 
@@ -22,6 +22,7 @@ For more information including the required setup and config format, see [setup]
   -h        : this help text
   -a <addr> : IP address to bind to (default :: and 0.0.0.0)
   -p <port> : TCP port to bind to (default 1024)
+  -l <path> : log all user input and append it to a file named <path>. if <path> is '-' stdout is used
   -si [y/n] : use socket as stdin? (default y)
   -so [y/n] : use socket as stdout? (default y)
   -se [y/n] : use socket as stderr? (default y)

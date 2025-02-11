@@ -35,6 +35,7 @@
     #define debug(code)
 #endif
 #define errExit(msg) do {perror(msg); exit(EXIT_FAILURE);} while (0)
+#define err_Exit(msg) do {perror(msg); _exit(EXIT_FAILURE);} while (0)
 #define printfExit(fmt, ...) do {printf(fmt, ##__VA_ARGS__); exit(EXIT_FAILURE);} while (0)
 #define nitems(arr) (sizeof(arr) / sizeof(arr[0]))
 
@@ -90,7 +91,8 @@ struct ip_table *ip_map;
 char glob_ip[INET6_ADDRSTRLEN];
 
 int CTFUID;
-char *cwd;
+char *cwd = NULL;
+char *log_path = NULL;
 int MAXTIME = 0;
 
 void close_open_fds() {
@@ -569,6 +571,7 @@ void help(int st, char **argv) {
     puts("  -h        : this help text");
     puts("  -a <addr> : IP address to bind to (default :: and 0.0.0.0)");
     puts("  -p <port> : TCP port to bind to (default 1024)");
+    puts("  -l <path> : log all user input and append it to a file named <path>. if <path> is '-' stdout is used");
     puts("  -si [y/n] : use socket as stdin? (default y)");
     puts("  -so [y/n] : use socket as stdout? (default y)");
     puts("  -se [y/n] : use socket as stderr? (default y)");
@@ -622,6 +625,10 @@ void parse_args(size_t argc, char **argv, struct config *cfg) {
         ARG_NUM("-lp", "--limit-processes", cfg->proc.lim, &cfg->proc.set)
         ARG_NUM("-lc", "--limit-connections", cfg->conn, NULL)
         ARG_NUM("-lf", "--limit-tmpfs", cfg->fss, NULL)
+        else if (!strcmp(argv[i], "-l") || !strcmp(argv[i], "--log")) {
+            if (++i >= argc) help(1, argv);
+            log_path = argv[i++];
+        }
         else help(1, argv);
     }
 
@@ -710,13 +717,47 @@ int bind_listen(struct config const cfg) {
     return lsock;
 }
 
+
+void stdin_log() {
+    
+    int logfd = 1;
+    int infds[2];
+    pipe(infds);
+
+    if (fork() == 0) {
+        dup2(infds[0], 0);
+        close(infds[1]);
+    } else {
+        if (strcmp(log_path, "-") != 0) {
+            logfd = open(log_path, O_CREAT|O_RDWR|O_APPEND, 0644);
+            if (logfd == -1) err_Exit("open");
+        }
+        close(infds[0]);
+        char buf[0x1000];
+        while (1) {
+            int r = read(0, buf, 0x1000);
+            if (r == -1) err_Exit("read");
+            if (r == 0) continue;
+            dprintf(logfd, "[%s-%ld]:", glob_ip, time(NULL));
+            write(logfd, buf, r);
+            if (write(infds[1], buf, r) == -1) err_Exit("write");
+        }
+    }
+}
+
+pid_t server_pid;
+
 void cleanup(int st, void *arg) {
     debug(puts("cleaning up connection ..."));
     decrement_connection(glob_ip);
+    if (log_path != NULL) {
+        debug(puts("killing stdin log ..."));
+        kill(getppid(), SIGKILL);
+    }
     if (st != 0) {
         printf("jail exited with non-zero status: %d\n", st);
         puts("stopping server ...");
-        kill(getppid(), SIGKILL);
+        kill(server_pid, SIGKILL);
     }
 }
 
@@ -750,11 +791,12 @@ void handle_connection(struct config cfg, int sock) {
     }
 
     // duplicate socket to stdio
-    if (cfg.in && fileno(stdin) != dup2(sock, fileno(stdin))) errExit("dup2");
-    if (cfg.out && fileno(stdout) != dup2(sock, fileno(stdout))) errExit("dup2");
-    if (cfg.err && fileno(stderr) != dup2(sock, fileno(stderr))) errExit("dup2");
+    if (cfg.in && 0 != dup2(sock, 0)) errExit("dup2");
+    if (cfg.out && 1 != dup2(sock, 1)) errExit("dup2");
+    if (cfg.err && 2 != dup2(sock, 2)) errExit("dup2");
     if (close(sock)) errExit("close");
 
+    if (log_path != NULL) stdin_log();
     parse_config_file(&cfg);
     enter_jail(&cfg);
     exit(0); // jail exits normally
@@ -797,6 +839,7 @@ int main(int argc, char **argv, char **envp) {
     lsock = bind_listen(cfg);
 
     init_ip_table();
+    server_pid = getpid();
 
     while (1) {
         struct sockaddr_storage addr;
@@ -833,7 +876,7 @@ int main(int argc, char **argv, char **envp) {
         if ((pid = fork())) {
             if (pid == -1) decrement_connection(glob_ip); // fork failed.
             if (close(sock)) errExit("close");
-            continue;
+            continue; // parent
         }
 
         // child
