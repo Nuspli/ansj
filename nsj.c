@@ -738,12 +738,13 @@ void stdin_log() {
         char buf[0x1000];
         while (1) {
             int r = read(0, buf, 0x1000);
-            if (r == -1) err_Exit("read");
-            if (r == 0) continue;
+            if (r <= 0) break;
             dprintf(logfd, "[%s-%ld]:", glob_ip, time(NULL));
             write(logfd, buf, r);
-            if (write(infds[1], buf, r) == -1) err_Exit("write");
+            if (write(infds[1], buf, r) == -1) break;
         }
+        close(infds[1]);
+        pause();
     }
 }
 
