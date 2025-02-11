@@ -562,24 +562,26 @@ void help(int st, char **argv) {
     puts("Usage:");
     printf("  %s [options]\n\n", basename(argv[0]));
 
-    puts("About:");
-    puts("  Lightweight network service jailer.");
-    puts("  Intended for hosting MULTIPLE pwn ctf challenges on a single port.");
-    puts("  For more information including the required setup and config format, see README.md.\n");
+    puts(
+        "About:\n"
+        "  Lightweight network service jailer.\n"
+        "  Intended for hosting MULTIPLE pwn ctf challenges on a single port.\n"
+        "  For more information including the required setup and config format, see README.md.\n\n"
 
-    puts("Options:");
-    puts("  -h        : this help text");
-    puts("  -a <addr> : IP address to bind to (default :: and 0.0.0.0)");
-    puts("  -p <port> : TCP port to bind to (default 1024)");
-    puts("  -l <path> : log all user input and append it to a file named <path>. if <path> is '-' stdout is used");
-    puts("  -si [y/n] : use socket as stdin? (default y)");
-    puts("  -so [y/n] : use socket as stdout? (default y)");
-    puts("  -se [y/n] : use socket as stderr? (default y)");
-    puts("  -lt <lim> : limit cpu time in seconds (default unchanged)");
-    puts("  -lm <lim> : limit amount of memory in bytes (default unchanged)");
-    puts("  -lp <lim> : limit number of processes (default unchanged)");
-    puts("  -lc <lim> : limit number of concurrent connections per ip (default 1)");
-    puts("  -lf <lim> : limit size of tmpfs in bytes (default 262144 aka 256KiB)\n");
+        "Options:\n"
+        "  -h        : this help text\n"
+        "  -a <addr> : IP address to bind to (default :: and 0.0.0.0)\n"
+        "  -p <port> : TCP port to bind to (default 1024)\n"
+        "  -l <path> : log all user input and append it to a file named <path>. if <path> is '-' stdout is used\n"
+        "  -si [y/n] : use socket as stdin? (default y)\n"
+        "  -so [y/n] : use socket as stdout? (default y)\n"
+        "  -se [y/n] : use socket as stderr? (default y)\n"
+        "  -lt <lim> : limit cpu time in seconds (default unchanged)\n"
+        "  -lm <lim> : limit amount of memory in bytes (default unchanged)\n"
+        "  -lp <lim> : limit number of processes (default unchanged)\n"
+        "  -lc <lim> : limit number of concurrent connections per ip (default 1)\n"
+        "  -lf <lim> : limit size of tmpfs in bytes (default 262144 aka 256KiB)\n\n"
+        );
     exit(st);
 }
 
@@ -763,9 +765,6 @@ void cleanup(int st, void *arg) {
 
 void handle_connection(struct config cfg, int sock) {
 
-    debug(puts("installing exit handler ..."));
-    if (on_exit(cleanup, NULL)) errExit("on_exit");
-
     struct rlimit rlim;
 
     // set resource limits
@@ -797,6 +796,10 @@ void handle_connection(struct config cfg, int sock) {
     if (close(sock)) errExit("close");
 
     if (log_path != NULL) stdin_log();
+
+    debug(puts("installing exit handler ..."));
+    if (on_exit(cleanup, NULL)) errExit("on_exit");
+
     parse_config_file(&cfg);
     enter_jail(&cfg);
     exit(0); // jail exits normally

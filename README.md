@@ -85,11 +85,33 @@ Finally, the challenge process is spawned. Root privileges are dropped and heavi
 
 ## Building
 
-`libcap` is required. For ubuntu:
+### Clone the repo
+
+```bash
+git clone https://github.com/Nuspli/ansj.git
+cd ansj
+```
+
+## Docker setup (recommended)
+
+Use the provided [Dockerfile](Dockerfile) to run the server. The challenges will be hosted on port 31337.
+
+```bash
+sudo docker build -t ansj .
+sudo docker run --privileged -p 31337:31337 --rm -it ansj
+```
+
+## Manual setup
+
+### Requirements
+
+`libcap`. For ubuntu:
 
 ```bash
 sudo apt install libcap-dev
 ```
+
+### Compile the binary
 
 If any of the capability functions fail, make sure you check your kernel supports them. Link against `libcap` with `-lcap`.
 
@@ -101,4 +123,10 @@ If you want to build in debug mode (lots of additional output), define `DEBUG`:
 
 ```bash
 gcc -DDEBUG nsj.c -o nsj -lcap
+```
+
+### Run
+
+```bash
+sudo ./nsj
 ```
