@@ -273,6 +273,7 @@ void parse_config_file(struct config *cfg) {
     alarm(5);
     if (fscanf(stdin, "%255s", key) != 1) errExit("fscanf");
     alarm(0);
+    signal(SIGALRM, SIG_IGN);
 
     FILE *config_fd = fopen("./config", "r");
     if (config_fd == NULL) errExit("fopen");
