@@ -24,7 +24,7 @@ CMD ["./nsj", "-p", "31337", "-l", "log", "-lp", "1024"]
 # logs: sudo docker exec -it <container> cat /home/ctf/log
 
 # update challenges / config:
-# sudo docker cp challenges/ <container>:/home/ctf/challenges
+# sudo docker cp challenges/. <container>:/home/ctf/challenges
 # sudo docker cp config <container>:/home/ctf/config
 
 # restart: sudo docker restart <container>
