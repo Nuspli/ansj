@@ -364,7 +364,7 @@ void parse_config_file(struct config *cfg) {
         exit(EXIT_FAILURE);
     }
 
-    // also cannot use /old, /home, /proc, /bin, /lib, /lib64, /usr, /etc, /var, /dev, /sbin
+    // also cannot use /old, /home, /proc, /bin, /lib, /lib64, /usr, /etc, /var, /sbin
     // /old would be really bad, everything else will likely error and fail later.
     if (strstr(cfg->cfg_file.challenge_dir_path_in_jail, "old") != NULL) {
         printf("error in config: challenge directory path in jail cannot contain \"old\": %s\n", cfg->cfg_file.challenge_dir_path_in_jail);
@@ -425,7 +425,7 @@ void enter_jail(struct config *cfg) {
         errExit("CRITICAL ERROR: pivot_root");
     }
 
-    char *dirs[] = {"/bin", "/lib", "/lib64", "/usr", "/etc", "/var", "/dev", "/sbin", NULL};
+    char *dirs[] = {"/bin", "/lib", "/lib64", "/usr", "/etc", "/var", "/sbin", NULL};
     for (char **dir = dirs; *dir; dir++) {
         char *path = *dir;
         char old_path[PATH_MAX];
