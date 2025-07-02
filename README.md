@@ -7,8 +7,8 @@ Do not trust my code, it's probably not secure. Do not use this unless you've ex
 ## About
 
 Lightweight? network service jailer.
-Intended for hosting MULTIPLE pwn ctf challenges on a single port.
-For more information including the required setup and config format, see [setup](#setup) section.
+Intended for hosting MULTIPLE pwn ctf challenges on a SINGLE port.
+For more information including the required setup and config format, see [setup](#setup).
 
 ## Usage
 
@@ -33,11 +33,13 @@ For more information including the required setup and config format, see [setup]
   -lf <lim> : limit size of tmpfs in bytes (default 262144 aka 256KiB)
 ```
 
+Note: `-lp` cannot be enforced for processes inside the jail that run with real user ID 0 (root). This is on the list of things to implement (using cgroups pids maybe?)!
+
 ## Setup
 
 ### config
 
-The config file is used to set up the files in the jail (flag, binaries) as well as the time after which the jail is destroyed. It also holds the key associated with the challenge. Users will be prompted for this key and can thus access multiple challenges on the same port.
+The config file is used to set up the files inside the jail (flag, binaries) as well as the time after which the jail is destroyed. It also holds the key associated with the challenge. Users will be prompted for this key and can thus access multiple challenges on the same port.
 
 Every line in the config must follow the format:
 
@@ -63,7 +65,7 @@ DO NOT LEAVE ANY VALUES EMPTY. TO OPT OUT OF list OR suid OR copy, USE "nolist" 
 
 ## Examples
 
-This repo comes with three common use case examples. The [bash](/challenges/default/) challenge may be kept as a way for users to explore the file system and get a feel for the environment. It also aims to show how to correctly use a setup/init binary to customize the jail. The [bof](/challenges/unpriv_bof_example/) challenge is a classic buffer overflow that never executes any code as root. The [rootshell](/challenges/rootshell_example/) challenge gives you a root shell inside the jail to test it's limitations and security. Yes you heard that right. I claim that not even root can do anything meaningful in the jail. If there's something I missed, please reach out. For more information on the examples refer to the source code.
+This repo comes with three common use case examples. The [bash](/challenges/default/) challenge may be kept as a way for users to explore the file system and get a feel for the environment. It also aims to show how to correctly use a setup/init binary to customize the jail. The [bof](/challenges/unpriv_bof_example/) challenge is a classic buffer overflow that never executes any code as root. The [rootshell](/challenges/rootshell_example/) challenge gives you a root shell inside the jail to test it's limitations and security. For more information on the examples refer to the source code.
 
 ## How it works
 
@@ -73,15 +75,17 @@ The ynetd based server keeps accepting connections and applies ressource limits.
 
 The jail is created in a new mount namespace that doesn't share the pid and network namespaces with the host. This means the jailed process can't access the host's network or processes. The new pid namespace along with a fresh /proc mount is important as it prohibits a sandbox escape via setns to the host's pid namespace.
 
-To isolate the filesystem, a jail directory is created in `/tmp/jail-XXXXXX` (where XXXXXX are random characters). This directory is mounted as a `tmpfs` filesystem. This means that all files created in the jail are backed by a controllable amount of memory. Memory r/w is also very fast. The size of the tmpfs is limited to `256KiB` by default. This is to prevent the jailed process from consuming all of the host's memory. A `pivot_root` syscall is performed to make the jail directory the new root. All references to `/` will now actually refer to `/tmp/jail-XXXXXX`.
+To isolate the filesystem, a jail directory is created in `/tmp/jail-XXXXXX` (where XXXXXX are random characters). This directory is mounted as a `tmpfs` filesystem. Thus, all files created in the jail are backed by a controllable amount of memory. Memory r/w is also very fast. The size of the tmpfs is limited to `256KiB` by default. This is to prevent the jailed process from consuming all of the host's memory. A `pivot_root` syscall is performed to make the jail directory the new root. All references to `/` will now actually refer to `/tmp/jail-XXXXXX`.
 
-Now the jail still needs necessary system files to do anything besides exist (like run our challenges). To provide these, `"/bin", "/lib", "/lib64", "/usr", "/etc", "/var", "/dev", "/sbin"` are bind-mounted **from the host** into the jail as **read-only**. This is done to prevent the jailed process from modifying these files and potentially breaking the host system. It's worth noting that these are the actual directories from the host, so if you have any sensitive information in these directories, it may be readable from the jail. In that case, you should use this in combination with **Docker**, a chrooted busybox, a VM, or something similar (which is recommended anyway).
+Now the jail still needs necessary system files to do anything besides exist (like run our challenges). To provide these, `"/bin", "/lib", "/lib64", "/usr", "/etc", "/var", "/dev", "/sbin"` are bind-mounted **from the host** into the jail as **read-only**. This is done to prevent the jailed process from modifying these files and potentially breaking the host system. It's worth noting that these are the actual directories from the host, so if you have any sensitive information in these directories, it will be readable from inside the jail. In that case, you should use this in combination with **Docker**, a chrooted busybox, a VM, or something similar (which is recommended anyway).
 
 After mounting the basic system files, the challenge directory (`dirname_in_challenges`) associated with the key is either bind-mounted or copied into the jail. If the copy option is used, the files will take from the tmpfs limit (unlike any bind-mounted directories). The optional suid bit is applied to the `file_in_dir_to_exec`. A fresh home directory to which the ctf user has read and write access is created.
 
 The current working directory is set to the `challenge_dir_path_in_jail`. We have now entered the jail. A new `init` process is spawned and will later clean up the jail. The init process is unkillable, even for root. A fresh proc mount is created in the new pid namespace. Running `ps aux` now only shows the init process (if root because the /proc mount uses hidepid=2), bash and ps.
 
 Finally, the challenge process is spawned. Root privileges are dropped and heavily restricted using linux capabilities. The `file_in_dir_to_exec` is now executed as the ctf user. The init process will wait for the challenge process to exit or for the timeout to be reached. Then it will clean up the jail and exit itself.
+
+If logging is enabled, all user input that reaches the challenge will be logged to a log file along with IP address and timestamp.
 
 ## Building
 
