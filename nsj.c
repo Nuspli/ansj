@@ -25,6 +25,8 @@
 #include <netinet/in.h>
 #include <sys/resource.h>
 #include <pthread.h>
+#include <sys/sysmacros.h>
+#include <poll.h>
 
 // part of libcap!, link with -lcap
 #include <sys/capability.h>
@@ -35,7 +37,6 @@
     #define debug(code)
 #endif
 #define errExit(msg) do {perror(msg); exit(EXIT_FAILURE);} while (0)
-#define err_Exit(msg) do {perror(msg); _exit(EXIT_FAILURE);} while (0)
 #define printfExit(fmt, ...) do {printf(fmt, ##__VA_ARGS__); exit(EXIT_FAILURE);} while (0)
 #define nitems(arr) (sizeof(arr) / sizeof(arr[0]))
 
@@ -54,7 +55,7 @@ struct config {
         struct in_addr ipv4;
     } addr;
     in_port_t port;
-    bool in, out, err;
+    bool nin, nout, nerr, single, no_time;
     struct {
         bool set;
         rlim_t lim;
@@ -73,7 +74,7 @@ struct config {
     } cfg_file;
 };
 
-#define MAX_IPS 512
+#define MAX_IPS 512 // todo: make this an option.
 #define NOSPACE 1
 #define EXCEEDED 2
 
@@ -195,6 +196,23 @@ void copy_directory(const char *src, const char *dst) {
     if (closedir(dir) == -1) errExit("closedir");
 }
 
+void make_directory(const char *path) {
+    char temp[PATH_MAX];
+    char *p = NULL;
+
+    snprintf(temp, sizeof(temp), "%s", path);
+
+    for (p = temp + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            if (mkdir(temp, 0755) && errno != EEXIST) errExit("mkdir");
+            *p = '/';
+        }
+    }
+
+    if (mkdir(temp, 0755) && errno != EEXIST) errExit("mkdir");
+}
+
 int get_ctf_uid() {
     struct passwd *pw = getpwnam("ctf");
     if (pw == NULL) {
@@ -217,11 +235,11 @@ void drop_capabilities() {
         CAP_BPF,
         CAP_CHECKPOINT_RESTORE,
 //        CAP_CHOWN, // allow chown
-        CAP_DAC_OVERRIDE,
-        CAP_DAC_READ_SEARCH,
+//        CAP_DAC_OVERRIDE, // allow bypassing file permission checks
+//        CAP_DAC_READ_SEARCH,
         CAP_FOWNER,
         CAP_FSETID,
-//        CAP_IPC_LOCK, // allow mmap
+        CAP_IPC_LOCK, // mlock bad? drop
         CAP_IPC_OWNER,
         CAP_KILL,
         CAP_LEASE,
@@ -266,14 +284,16 @@ void timeout_handler(int sig) {
 
 void parse_config_file(struct config *cfg) {
 
-    printf("enter the challenge key: ");
-    char key[0x100];
+    char key[0x100] = {0};
 
-    signal(SIGALRM, timeout_handler);
-    alarm(5);
-    if (fscanf(stdin, "%255s", key) != 1) exit(0);
-    alarm(0);
-    signal(SIGALRM, SIG_IGN);
+    if (!cfg->single) {
+        printf("enter the challenge key: ");
+
+        signal(SIGALRM, timeout_handler);
+        alarm(5);
+        if (fscanf(stdin, "%255s", key) != 1) exit(0);
+        alarm(0);
+    } debug(else fprintf(stderr, "using single challenge only.\n"));
 
     FILE *config_fd = fopen("./config", "r");
     if (config_fd == NULL) errExit("fopen");
@@ -289,7 +309,7 @@ void parse_config_file(struct config *cfg) {
         puts("this service is probably used to host ctf challenges.");
         puts("in order to access a challenge, you need to know the key.");
         puts("if it hasn't been specified or doesn't work, contact the organizers.\n");
-        puts("publically available keys:");
+        puts("publicly available keys:");
         display_keys = true;
     }
 
@@ -304,7 +324,7 @@ void parse_config_file(struct config *cfg) {
         
         if (display_keys && list != NULL && strcmp(list, "list") == 0) puts(keychall);
 
-        if (keychall != NULL && strcmp(keychall, key) == 0) {
+        if (cfg->single || keychall != NULL && strcmp(keychall, key) == 0) {
 
             char *suid_str = strtok(NULL, ":");
             char *copy_str = strtok(NULL, ":");
@@ -375,10 +395,102 @@ void parse_config_file(struct config *cfg) {
         debug(fprintf(stderr, "warning: suid binaries should be copied into the jail.\n"));
 }
 
-void enter_jail(struct config *cfg, int logfd) {
+pid_t jailed_init_pid = 0;
+volatile sig_atomic_t timed_out = 0;
+
+void timeout_handler2(int sig) {
+    debug(fprintf(stderr, "timeout reached, killing challenge with pid %d ...\n", jailed_init_pid));
+    if (kill(jailed_init_pid, SIGKILL) == -1 && errno != ESRCH) errExit("kill");
+    puts("timeout!");
+    timed_out = 1;
+}
+
+void enable_controller(const char *parent, const char *controller) {
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/cgroup.subtree_control", parent);
+    int fd = open(path, O_WRONLY);
+    if (fd == -1) errExit("open subtree_control");
+
+    char buf[32];
+    snprintf(buf, sizeof(buf), "+%s", controller);
+    if (write(fd, buf, strlen(buf)) == -1) errExit("write subtree_control");
+
+    if (close(fd) == -1) errExit("close subtree_control");
+}
+
+int setup_cgroups(const char *jail_name, struct config *cfg) {
+
+    if (!(cfg->proc.set || cfg->cpu.set || cfg->mem.set)) {
+        debug(fprintf(stderr, "no cgroup limits set, skipping cgroup setup.\n"));
+        return -1; // no cgroup limits set, skip setup
+    }
+
+    char cgroup_path[PATH_MAX];
+    snprintf(cgroup_path, sizeof(cgroup_path), "/sys/fs/cgroup/nsj/%s", jail_name);
+
+    make_directory("/sys/fs/cgroup/nsj");
+    
+    enable_controller("/sys/fs/cgroup/nsj", "pids");
+    enable_controller("/sys/fs/cgroup/nsj", "cpu");
+    enable_controller("/sys/fs/cgroup/nsj", "memory");
+
+    make_directory(cgroup_path);
+
+    // set the cgroup limits
+    if (cfg->proc.set) {
+        char pids_max_path[PATH_MAX];
+        snprintf(pids_max_path, sizeof(pids_max_path), "%s/pids.max", cgroup_path);
+        int pids_max_fd = open(pids_max_path, O_WRONLY);
+        if (pids_max_fd == -1) errExit("open pids_max");
+        debug(fprintf(stderr, "... setting process limit to %lu\n", cfg->proc.lim));
+        dprintf(pids_max_fd, "%d", cfg->proc.lim); // should be at least 1.
+        if (close(pids_max_fd) == -1) errExit("close");   
+    }
+
+    if (cfg->cpu.set) {
+        char cpu_max_path[PATH_MAX];
+        snprintf(cpu_max_path, sizeof(cpu_max_path), "%s/cpu.max", cgroup_path);
+        int cpu_max_fd = open(cpu_max_path, O_WRONLY);
+        if (cpu_max_fd == -1) errExit("open cpu_max");
+        debug(fprintf(stderr, "... setting CPU limit to %d%%\n", cfg->cpu.lim));
+        dprintf(cpu_max_fd, "%d %d", cfg->cpu.lim * 1000, 100000); // format: "max_period max_quota"
+        if (close(cpu_max_fd) == -1) errExit("close");
+    }
+
+    if (cfg->mem.set) {
+        char mem_max_path[PATH_MAX];
+        snprintf(mem_max_path, sizeof(mem_max_path), "%s/memory.max", cgroup_path);
+        int mem_max_fd = open(mem_max_path, O_WRONLY);
+        if (mem_max_fd == -1) errExit("open mem_max");
+        debug(fprintf(stderr, "... setting memory limit to %zu bytes\n", cfg->mem.lim));
+        dprintf(mem_max_fd, "%zu", cfg->mem.lim); // format: "max_bytes"
+        if (close(mem_max_fd) == -1) errExit("close");
+    }
+
+    char cgroup_proc_path[PATH_MAX];
+    snprintf(cgroup_proc_path, sizeof(cgroup_proc_path), "%s/cgroup.procs", cgroup_path);
+    int cgroup_proc_fd = open(cgroup_proc_path, O_WRONLY);
+    if (cgroup_proc_fd == -1) errExit("open cgroup_proc");
+    return cgroup_proc_fd;
+}
+
+void enter_jail(struct config *cfg) {
 
     char new_root[] = "/tmp/jail-XXXXXX";
+    char *jail_name = new_root + 5; // skip "/tmp/"
     char old_root[PATH_MAX];
+
+    debug(fprintf(stderr, "obtaining a file descriptor for the old root directory ...\n"));
+    int cleanup_dirfd = open("/", O_PATH | O_DIRECTORY);
+    if (cleanup_dirfd == -1) errExit("open old root");
+    debug(fprintf(stderr, "... obtained file descriptor %d for the old root directory.\n", cleanup_dirfd));
+    
+    debug(fprintf(stderr, "creating jail root ...\n"));
+    if (mkdtemp(new_root) == NULL) errExit("mkdtemp jail root");
+    debug(fprintf(stderr, "... created jail root at \"%s\".\n", new_root));
+
+    debug(fprintf(stderr, "setting up cgroup for the jail ...\n"));
+    int cgroup_proc_fd = setup_cgroups(jail_name, cfg);
 
     char old_challenge_dir_path[PATH_MAX-2] = {0};
     snprintf(old_challenge_dir_path, sizeof(old_challenge_dir_path), "/old%s/challenges/%s", cwd, cfg->cfg_file.dirname_in_challenges);
@@ -395,35 +507,30 @@ void enter_jail(struct config *cfg, int logfd) {
     debug(fprintf(stderr, "splitting off into different namespace(s) ...\n"));
     if (unshare(CLONE_NEWNS|CLONE_NEWPID|CLONE_NEWNET|CLONE_NEWUTS|CLONE_NEWIPC) == -1) errExit("unshare");
 
-    debug(fprintf(stderr, "creating jail structure ...\n"));
-    debug(fprintf(stderr, "... creating jail root ...\n"));
-    if (mkdtemp(new_root) == NULL) errExit("mkdtemp");
-    debug(fprintf(stderr, "... ... created jail root at \"%s\".\n", new_root));
-
     debug(fprintf(stderr, "... changing the old / to a private mount so that pivot_root succeeds later.\n"));
-    if (mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) == -1) errExit("mount");
+    if (mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) == -1) errExit("mount private");
 
     char size_option[32];
     snprintf(size_option, sizeof(size_option), "size=%zu", cfg->fss);
 
     debug(fprintf(stderr, "... bind-mounting the new root over itself as a tmpfs. this will also make it a 'mount point' for pivot_root() later.\n"));
-    if (mount(new_root, new_root, "tmpfs", 0, size_option) == -1) errExit("mount");
+    if (mount(new_root, new_root, "tmpfs", 0, size_option) == -1) errExit("mount tmpfs");
 
     debug(fprintf(stderr, "... creating a directory in which pivot_root will put the old root filesystem.\n"));
     snprintf(old_root, sizeof(old_root), "%s/old", new_root);
-    if (mkdir(old_root, 0777) == -1) errExit("mkdir");
-
-    debug(fprintf(stderr, "... obtaining a file descriptor for the old root directory ...\n"));
-    int cleanup_dirfd = open("/", O_DIRECTORY);
-    if (cleanup_dirfd == -1) errExit("open");
-    debug(fprintf(stderr, "... ... obtained file descriptor %d for the old root directory.\n", cleanup_dirfd));
+    if (mkdir(old_root, 0777) == -1) errExit("mkdir /old");
 
     // after this, / will refer to /tmp/jail-XXXXXX, and /old will refer to the old root filesystem
     debug(fprintf(stderr, "... pivoting the root filesystem!\n"));
     if (syscall(SYS_pivot_root, new_root, old_root) == -1) {
-        // if pivot root fails, things are really bad. the jail would have to be cleaned up manually. (unmount /tmp/jail-XXXXXX/old and rm -rf /tmp/jail-XXXXXX)
+        // if pivot root fails here, things are really bad. the jail would have to be cleaned up manually. (unmount /tmp/jail-XXXXXX/old and rm -rf /tmp/jail-XXXXXX)
         errExit("CRITICAL ERROR: pivot_root");
     }
+
+    debug(fprintf(stderr, "creating jail structure ...\n"));
+
+    // mount some important directories into the jail. you can remove or add directories here.
+    // a home directory, some special files under /dev, /proc and /tmp are created later.
 
     char *dirs[] = {"/bin", "/lib", "/lib64", "/usr", "/etc", "/var", "/sbin", NULL};
     for (char **dir = dirs; *dir; dir++) {
@@ -432,10 +539,24 @@ void enter_jail(struct config *cfg, int logfd) {
         snprintf(old_path, sizeof(old_path), "/old%s", path);
 
         debug(fprintf(stderr, "... bind-mounting (read-only) %s into %s in the jail.\n", old_path, path));
-        if (mkdir(path, 0755) == -1) errExit("mkdir");
-        if (mount(old_path, path, NULL, MS_BIND|MS_RDONLY, NULL) == -1) errExit("mount");
-        if (mount(NULL, path, NULL, MS_REMOUNT|MS_BIND|MS_RDONLY, NULL) == -1) errExit("mount");
+        make_directory(path);
+        if (mount(old_path, path, NULL, MS_BIND|MS_RDONLY, NULL) == -1) errExit("mount bind");
+        if (mount(NULL, path, NULL, MS_REMOUNT|MS_BIND|MS_RDONLY, NULL) == -1) errExit("mount remount");
     }
+
+    if (mkdir("/tmp", 01777) == -1) errExit("mkdir /tmp");
+    if (mkdir("/dev", 0755) == -1) errExit("mkdir /dev");
+    if (mknod("/dev/null", S_IFCHR|0666, makedev(1, 3)) == -1) errExit("mknod /dev/null");
+    if (mknod("/dev/zero", S_IFCHR|0666, makedev(1, 5)) == -1) errExit("mknod /dev/zero");
+    if (mknod("/dev/random", S_IFCHR|0666, makedev(1, 8)) == -1) errExit("mknod /dev/random");
+    if (mknod("/dev/urandom", S_IFCHR|0666, makedev(1, 9)) == -1) errExit("mknod /dev/urandom");
+
+    if (mkdir("/root", 0700) == -1) errExit("mkdir /root");
+
+    debug(fprintf(stderr, "... creating home directory for ctf user.\n"));
+    if (mkdir("/home", 0755) == -1) errExit("mkdir /home");
+    if (mkdir("/home/ctf", 0750) == -1) errExit("mkdir /home/ctf");
+    if (chown("/home/ctf", CTFUID, CTFUID) == -1) errExit("chown /home/ctf");
 
     // mount the challenge files into the new challenge directory
     // optionally make file to exec suid root to allow further setup,
@@ -443,21 +564,7 @@ void enter_jail(struct config *cfg, int logfd) {
     // optionally copy the challenge files into the jail instead of bind-mounting them (slower). THIS IS TO DEAL WITH SUID BINARIES LIKE MENTIONED ABOVE.
 
     debug(fprintf(stderr, "... creating challenge directory in the jail.\n"));
-    // like mkdir -p
-    char temp[4096];
-    char *p = NULL;
-
-    snprintf(temp, sizeof(temp), "%s", cfg->cfg_file.challenge_dir_path_in_jail);
-
-    for (p = temp + 1; *p; p++) {
-        if (*p == '/') {
-            *p = '\0';
-            if (mkdir(temp, 0755) && errno != EEXIST) errExit("mkdir");
-            *p = '/';
-        }
-    }
-
-    if (mkdir(temp, 0755) && errno != EEXIST) errExit("mkdir");
+    make_directory(cfg->cfg_file.challenge_dir_path_in_jail);
 
     char *exec_path_to_chmod;
     if (cfg->cfg_file.copy) {
@@ -466,8 +573,8 @@ void enter_jail(struct config *cfg, int logfd) {
         exec_path_to_chmod = new_file_to_exec;
     } else {
         debug(fprintf(stderr, "... bind-mounting (read-only) %s into %s in the jail.\n", old_challenge_dir_path, cfg->cfg_file.challenge_dir_path_in_jail));
-        if (mount(old_challenge_dir_path, cfg->cfg_file.challenge_dir_path_in_jail, NULL, MS_BIND|MS_RDONLY, NULL) == -1) errExit("mount");
-        if (mount(NULL, cfg->cfg_file.challenge_dir_path_in_jail, NULL, MS_REMOUNT|MS_BIND|MS_RDONLY, NULL) == -1) errExit("mount");
+        if (mount(old_challenge_dir_path, cfg->cfg_file.challenge_dir_path_in_jail, NULL, MS_BIND|MS_RDONLY, NULL) == -1) errExit("mount challenge_dir");
+        if (mount(NULL, cfg->cfg_file.challenge_dir_path_in_jail, NULL, MS_REMOUNT|MS_BIND|MS_RDONLY, NULL) == -1) errExit("mount challenge_dir");
         exec_path_to_chmod = old_file_to_exec;
     }
 
@@ -477,45 +584,34 @@ void enter_jail(struct config *cfg, int logfd) {
     int uid = cfg->cfg_file.suid ? 0 : CTFUID;
     int perms = cfg->cfg_file.suid ? 04755 : 0755;
 
-    if (chown(exec_path_to_chmod, uid, uid) == -1) errExit("chown");
-    if (chmod(exec_path_to_chmod, perms) == -1) errExit("chmod");
+    if (chown(exec_path_to_chmod, uid, uid) == -1) errExit("chown challenge");
+    if (chmod(exec_path_to_chmod, perms) == -1) errExit("chmod challenge");
 
     debug(fprintf(stderr, "... unmounting old root directory.\n"));
-    if (umount2("/old", MNT_DETACH) == -1) errExit("umount2"); // cleaning up jail root is not safe until real root is unmounted!
-    if (rmdir("/old") == -1) errExit("rmdir");
-
-    debug(fprintf(stderr, "... creating home directory for ctf user.\n"));
-    if (mkdir("/home", 0755) == -1) errExit("mkdir");
-    if (mkdir("/home/ctf", 0750) == -1) errExit("mkdir");
-    if (chown("/home/ctf", CTFUID, CTFUID) == -1) errExit("chown");
+    if (umount2("/old", MNT_DETACH) == -1) errExit("umount2 old"); // cleaning up jail root is not safe until real root is unmounted!
+    if (rmdir("/old") == -1) errExit("rmdir old");
 
     debug(fprintf(stderr, "moving the current working directory into the jail.\n"));
-    if (chdir(cfg->cfg_file.challenge_dir_path_in_jail) != 0) errExit("chdir");
-
-    if (chmod("/", 0755) == -1) errExit("chmod"); // I forgot why I have this here, but it's probably important.
+    if (chdir(cfg->cfg_file.challenge_dir_path_in_jail) != 0) errExit("chdir challenge_dir");
 
     debug(fprintf(stderr, "starting new init process ...\n"));
-    pid_t init_pid = fork();
-    debug(fprintf(stderr, "... forked with init_pid %d.\n", init_pid));
-    if (init_pid == -1) errExit("fork");
-    if (init_pid != 0) {wait(NULL); _exit(0);} // keep the (useless) parent around until the child is done. _exit to avoid atexit handler being called twice.
-
-    // continue as init (pid 1) from here on
-
-    debug(fprintf(stderr, "bind-mounting fresh /proc into jail.\n"));
-    if (mkdir("/proc", 0755) == -1) errExit("mkdir");
-    if (mount("proc", "/proc", "proc", MS_NOSUID|MS_NOEXEC|MS_NODEV, "hidepid=2") != 0) errExit("mount");
-    if (mount(NULL, "/proc", NULL, MS_REMOUNT|MS_BIND|MS_RDONLY, NULL) != 0) errExit("mount");
-
-    printf("your instance will die in %d seconds.\n", MAXTIME);
-    
-    debug(fprintf(stderr, "forking off challenge process ...\n"));
     pid_t pid = fork();
     debug(fprintf(stderr, "... forked with pid %d.\n", pid));
 
-    if (pid == -1) errExit("fork");
+    if (pid == -1) errExit("fork jail");
     if (pid == 0) {
-        close_open_fds();
+        // continue as init (pid 1) from here on
+
+        signal(SIGALRM, SIG_IGN);
+
+        debug(fprintf(stderr, "bind-mounting fresh /proc into jail.\n"));
+        if (mkdir("/proc", 0755) == -1) errExit("mkdir proc");
+        if (mount("proc", "/proc", "proc", MS_NOSUID|MS_NOEXEC|MS_NODEV, "hidepid=2") != 0) errExit("mount proc");
+        if (mount(NULL, "/proc", NULL, MS_REMOUNT|MS_BIND|MS_RDONLY, NULL) != 0) errExit("mount proc");
+        
+        if (close(cleanup_dirfd) == -1) errExit("close");
+        if (cgroup_proc_fd != -1 && close(cgroup_proc_fd) == -1) errExit("close cgroup_proc_fd");
+        close_open_fds(); // just to be safe.
 
         debug(fprintf(stderr, "... dropping privileges ...\n"));
 
@@ -528,37 +624,92 @@ void enter_jail(struct config *cfg, int logfd) {
 
         debug(fprintf(stderr, "... launching challenge ...\n\n"));
         char *const args[] = {new_file_to_exec, NULL};
-        if (execve(new_file_to_exec, args, NULL) == -1) errExit("execve");
-        
-    } else {
-        // init process, cannot be killed (or otherwise messed with?)
-        int status;
-        int t = 0;
-        while ((waitpid(pid, &status, WNOHANG) == 0) && ((logfd != -1) ? (fcntl(logfd, F_GETFL) != -1) : 1)) {
-            if (t >= MAXTIME) {puts("timeout!"); break;}
-            sleep(1);
-            t++;
-        }
 
-        debug(fprintf(stderr, "challenge exited with status %d\n", WEXITSTATUS(status)));
-        debug(fprintf(stderr, "cleaning up the jail directory ...\n"));
-        debug(fprintf(stderr, "... removing files:\n"));
+        if (!cfg->no_time) printf("your instance will die in %d seconds.\n", MAXTIME);
 
-        if (chdir("/") == -1) errExit("chdir"); // this is /tmp/jail-XXXXXX, not the real root.
-        delete_directory(".");
-
-        char *rel_pathname = (char *)new_root + 1;
-        debug(fprintf(stderr, "... removing jail directory at %s relative to dirfd %d\n", rel_pathname, cleanup_dirfd));
-        if (unlinkat(cleanup_dirfd, rel_pathname, AT_REMOVEDIR) == -1) errExit("unlinkat");
+        if (execve(args[0], args, NULL) == -1) errExit("execve challenge");        
     }
-    if (close(cleanup_dirfd) == -1) errExit("close");
+
+    jailed_init_pid = pid;
+
+    if (cgroup_proc_fd != -1) {
+        debug(fprintf(stderr, "adding pid %d to jail cgroup %s.\n", pid, jail_name));
+        if (dprintf(cgroup_proc_fd, "%d", pid) < 0) errExit("dprintf cgroup_proc_fd");
+        if (close(cgroup_proc_fd) == -1) errExit("close cgroup_proc_fd");
+    }
+    
+    struct sigaction sa = {0};
+    sa.sa_handler = timeout_handler2;
+    sigaction(SIGALRM, &sa, NULL); // do not set SA_RESTART to avoid blocking on recv after timeout.
+
+    alarm(MAXTIME);
+    
+    int status;
+    while ((waitpid(pid, &status, WNOHANG) == 0) && !timed_out) {
+
+        if (log_path != NULL) {
+            // stdin is pipe, check for early broken pipe.
+            struct pollfd pfd = {.fd = 0, .events = POLLIN | POLLHUP | POLLERR};
+            int ret = poll(&pfd, 1, 10); // 10ms timeout.
+
+            if (ret > 0) {
+                if (pfd.revents & (POLLHUP | POLLERR)) {
+                    debug(fprintf(stderr, "client closed the connection. killing jail.\n"));
+                    if (kill(jailed_init_pid, SIGKILL) == -1 && errno != ESRCH) errExit("kill");
+                    timed_out = 1;
+                }
+            } else if (ret < 0 && errno != EINTR) {
+                errExit("poll");
+            }
+
+        } else {
+            // stdin is socket, check for early client disconnects.
+            char buf;
+            ssize_t r = recv(0, &buf, 1, MSG_PEEK|MSG_DONTWAIT);
+            if (r == 0) {
+                debug(fprintf(stderr, "client closed the connection. killing jail.\n"));
+                if (kill(jailed_init_pid, SIGKILL) == -1 && errno != ESRCH) errExit("kill");
+                timed_out = 1;
+            } else if (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != ENOTSOCK && errno != EINTR) {
+                errExit("recv MSG_PEEK");
+            }
+        }
+            
+        usleep(10000); // do nothing.
+    }
+
+    alarm(0);
+    signal(SIGALRM, SIG_DFL);
+
+    // if a client closes the connection early, writes to the socket will result in SIGPIPE.
+    // this could interfere with debug output, so we ignore it.
+    // (note: you should always use '-se n' for debug output)
+    signal(SIGPIPE, SIG_IGN);
+    
+    debug(fprintf(stderr, "challenge exited with status %d\n", WEXITSTATUS(status)));
+    debug(fprintf(stderr, "cleaning up the jail directory ...\n"));
+    debug(fprintf(stderr, "... removing files:\n"));
+
+    chdir("/");
+    delete_directory("."); // this is /tmp/jail-XXXXXX, not the real root.
+
+    char *rel_pathname = (char *)new_root + 1;
+    debug(fprintf(stderr, "... removing jail directory at %s relative to dirfd %d.\n", rel_pathname, cleanup_dirfd));
+    if (unlinkat(cleanup_dirfd, rel_pathname, AT_REMOVEDIR) == -1) errExit("unlinkat jail");
+    
+    if (cgroup_proc_fd != -1) {
+        char rel_cgroup_path[PATH_MAX];
+        snprintf(rel_cgroup_path, sizeof(rel_cgroup_path), "sys/fs/cgroup/nsj/%s", jail_name);
+        debug(fprintf(stderr, "... removing cgroup directory %s relative to dirfd %d.\n", rel_cgroup_path, cleanup_dirfd));
+        if (unlinkat(cleanup_dirfd, rel_cgroup_path, AT_REMOVEDIR) == -1) errExit("unlinkat cgroup");
+    }
+    
+    if (close(cleanup_dirfd) == -1) errExit("close cleanup_dirfd");
     debug(fprintf(stderr, "exiting ...\n"));
     return;
 }
 
-/*
-PART OF THE FOLLOWING IS TAKEN FROM ynetd: https://yx7.cc/code
-*/
+// PART OF THE FOLLOWING IS TAKEN FROM ynetd: https://yx7.cc/code
 
 void help(int st, char **argv) {
 
@@ -567,36 +718,51 @@ void help(int st, char **argv) {
 
     puts(
         "About:\n"
-        "  Lightweight network service jailer.\n"
+        "  Lightweight(?) network service jailer.\n"
         "  Intended for hosting MULTIPLE pwn ctf challenges on a single port.\n"
-        "  For more information including the required setup and config format, see README.md.\n\n"
-
+        "\n"
         "Options:\n"
-        "  -h        : this help text\n"
-        "  -a <addr> : IP address to bind to (default :: and 0.0.0.0)\n"
-        "  -p <port> : TCP port to bind to (default 1024)\n"
-        "  -l <path> : log all user input and append it to a file named <path>. if <path> is '-' stdout is used\n"
-        "  -si [y/n] : use socket as stdin? (default y)\n"
-        "  -so [y/n] : use socket as stdout? (default y)\n"
-        "  -se [y/n] : use socket as stderr? (default y)\n"
-        "  -lt <lim> : limit cpu time in seconds (default unchanged)\n"
-        "  -lm <lim> : limit amount of memory in bytes (default unchanged)\n"
-        "  -lp <lim> : limit number of processes (default unchanged)\n"
-        "  -lc <lim> : limit number of concurrent connections per ip (default 1)\n"
-        "  -lf <lim> : limit size of tmpfs in bytes (default 262144 aka 256KiB)\n"
-        );
+        "  -h, --help                       This help text\n"
+        "  -a, --addr <addr>                IP address to bind to (default :: and 0.0.0.0).\n"
+        "  -p, --port <port>                TCP port to bind to (default 1024).\n"
+        "  -s, --single                     Serve a single challenge only. the first line of the config file is used without prompting for the key.\n"
+        "  -l, --log <path>                 Log all user input and append it to a file named <path>. if <path> is '-' stdout is used.\n"
+        "  -nt, --no-time                   Don't tell the user how much time their instance has.\n"
+        "  -ni, --no-stdin                  Don't use the socket as stdin.\n"
+        "  -no, --no-stdout                 Don't use the socket as stdout.\n"
+        "  -ne, --no-stderr                 Don't use the socket as stderr. useful for debugging.\n"
+        "  -lu, --limit-cpu-usage <lim>     Maximum cpu usage per connection in percent (default unchanged).\n"
+        "  -lm, --limit-memory <lim>        Limit the amount of memory in bytes (default unchanged).\n"
+        "  -lp, --limit-processes <lim>     Limit the number of processes (default unchanged).\n"
+        "  -lc, --limit-connections <lim>   Limit the number of concurrent connections per ip (default 1).\n"
+        "  -lf, --limit-tmpfs <lim>         Limit the size of tmpfs in bytes (default 262144 aka 256KiB).\n"
+        "\n"
+        "Config:\n"
+        "  The config file is located at ./config and each line must be formatted as follows:\n"
+        "\n"
+        "    :key:dirname_in_challenges:file_in_dir_to_exec:timeout_in_seconds:challenge_dir_path_in_jail:list/nolist:suid/nosuid:copy/nocopy:\n"
+        "\n"
+        "  key:                             The unique key associated with the challenge. CANNOT BE 'help' OR CONTAIN ':' OR ' '.\n"
+        "  dirname_in_challenges:           The name of the directory in ./challenges that contains the challenge files.\n"
+        "  file_in_dir_to_exec:             The name of the file in dirname_in_challenges that will be executed in the jail.\n"
+        "  timeout_in_seconds:              The time in seconds after which the jail will be destroyed.\n"
+        "  challenge_dir_path_in_jail:      The path to the directory in the jail where the challenge files will be accessible. Must be absolute. Cannot use /old, /home, /proc, /bin, /lib, /lib64, /usr, /etc, /var, /dev, /sbin.\n"
+        "  list/nolist:                     If this value is 'list', the key will be listed when the user types 'help'.\n"
+        "  suid/nosuid:                     If this value is 'suid', the file_in_dir_to_exec will be made suid root. If copy is not set, this will make the file suid root outside of the jail too. YOU PROBABLY DON'T WANT THIS. USE copy FOR SUID CHALLENGES.\n"
+        "  copy/nocopy:                     If this value is 'copy', the challenge directory will be copied into the jail instead of bind-mounted. This may be slower for challenges with many files.\n"
+        "\n"
+        "  DO NOT LEAVE ANY VALUES EMPTY. TO OPT OUT OF list OR suid OR copy, USE 'nolist' OR 'nosuid' OR 'nocopy' OR LITERALLY ANY OTHER STRING. DO NOT DO THIS:\n"
+        "    :key:dirname_in_challenges:file_in_dir_to_exec::challenge_dir_path_in_jail::::\n"
+    );
     exit(st);
 }
 
 void parse_args(size_t argc, char **argv, struct config *cfg) {
 
-#define ARG_YESNO(S, L, V) \
+#define ARG_OPT(S, L, V) \
     else if (!strcmp(argv[i], (S)) || !strcmp(argv[i], (L))) { \
-        if (++i >= argc) \
-            help(1, argv); \
-        if (argv[i][1] || (*argv[i] != 'y' && *argv[i] != 'n')) \
-            help(1, argv); \
-        (V) = *argv[i++] == 'y'; \
+        (V) = true; \
+        i++; \
     }
 
 #define ARG_NUM(S, L, V, P) \
@@ -605,14 +771,22 @@ void parse_args(size_t argc, char **argv, struct config *cfg) {
             help(1, argv); \
         (V) = strtol(argv[i++], NULL, 10); \
         if (P) \
-            * (bool *) (P) = true; \
+            *(bool *)(P) = true; \
     }
 
     for (size_t i = 1; i < argc; ) {
         if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) help(0, argv);
-        ARG_YESNO("-si", "--stdin", cfg->in)
-        ARG_YESNO("-so", "--stdout", cfg->out)
-        ARG_YESNO("-se", "--stderr", cfg->err)
+        ARG_OPT("-ni", "--no-stdin", cfg->nin)
+        ARG_OPT("-no", "--no-stdout", cfg->nout)
+        ARG_OPT("-ne", "--no-stderr", cfg->nerr)
+        ARG_OPT("-nt", "--no-time", cfg->no_time)
+        ARG_OPT("-s", "--single", cfg->single)
+        ARG_NUM("-p", "--port", cfg->port, NULL)
+        ARG_NUM("-lu", "--limit-cpu-usage", cfg->cpu.lim, &cfg->cpu.set)
+        ARG_NUM("-lm", "--limit-memory", cfg->mem.lim, &cfg->mem.set)
+        ARG_NUM("-lp", "--limit-processes", cfg->proc.lim, &cfg->proc.set)
+        ARG_NUM("-lc", "--limit-connections", cfg->conn, NULL)
+        ARG_NUM("-lf", "--limit-tmpfs", cfg->fss, NULL)
         else if (!strcmp(argv[i], "-a") || !strcmp(argv[i], "--addr")) {
             if (++i >= argc)
                 help(1, argv);
@@ -624,12 +798,6 @@ void parse_args(size_t argc, char **argv, struct config *cfg) {
                 errExit("inet_pton");
             ++i;
         }
-        ARG_NUM("-p", "--port", cfg->port, NULL)
-        ARG_NUM("-lt", "--limit-time", cfg->cpu.lim, &cfg->cpu.set)
-        ARG_NUM("-lm", "--limit-memory", cfg->mem.lim, &cfg->mem.set)
-        ARG_NUM("-lp", "--limit-processes", cfg->proc.lim, &cfg->proc.set)
-        ARG_NUM("-lc", "--limit-connections", cfg->conn, NULL)
-        ARG_NUM("-lf", "--limit-tmpfs", cfg->fss, NULL)
         else if (!strcmp(argv[i], "-l") || !strcmp(argv[i], "--log")) {
             if (++i >= argc) help(1, argv);
             log_path = argv[i++];
@@ -637,7 +805,7 @@ void parse_args(size_t argc, char **argv, struct config *cfg) {
         else help(1, argv);
     }
 
-#undef ARG_YESNO
+#undef ARG_OPT
 #undef ARG_NUM
 }
 
@@ -724,36 +892,63 @@ int bind_listen(struct config const cfg) {
 
 int infds[2];
 
-void stdin_log(int logfd) {
+void handler(int sig) {
+    debug(fprintf(stderr, "received SIGUSR2, exiting log process ...\n"));
+    exit(0);
+}
+
+pid_t log_pid;
+
+void stdin_log(int lfd) {
+    
+    log_pid = getpid();
     pipe(infds); // 1===>0
 
     int pid = fork();
+    if (pid == -1) errExit("fork log process");
     if (pid) {
+
+        struct sigaction sa = {0};
+        sa.sa_handler = handler;
+        sigaction(SIGUSR2, &sa, NULL); // do not set SA_RESTART
+
         close(infds[0]);
         char buf[0x1000];
         while (1) {
-            int r = read(0, buf, 0x1000);
+            int r = read(0, buf, 0x1000); // read from socket
             if (r <= 0) break;
-            if (waitpid(pid, NULL, WNOHANG) != 0) break; // todo
-            if (write(infds[1], buf, r) == -1) break; // todo: find better solution. this is a race condition
-            dprintf(logfd, "[%s-%ld]:", glob_ip, time(NULL));
-            write(logfd, buf, r);
+            if (waitpid(pid, NULL, WNOHANG) != 0) break;
+            dprintf(lfd, "[%s-%ld]:", glob_ip, time(NULL));
+            write(lfd, buf, r);
+            if (write(infds[1], buf, r) == -1) break; // write to pipe (challenge process' stdin)
         }
-        close(infds[1]);
-        close(logfd); // this should trigger cleanup of jail
+        close(lfd);
+        close(infds[1]); // this should cause a broken pipe in the child process.
+        debug(fprintf(stderr, "stdin_log: exiting ...\n"));
         exit(0);
     } else {
         dup2(infds[0], 0);
+        close(infds[0]);
         close(infds[1]);
     }
 }
 
 pid_t server_pid;
+int logfd = -1;
 
 void cleanup(int st, void *arg) {
     debug(fprintf(stderr, "cleaning up connection ...\n"));
     decrement_connection(glob_ip);
-    close(infds[0]);
+
+    if (log_path != NULL) {
+        debug(fprintf(stderr, "killing log process with pid %d ...\n", log_pid));
+        if (kill(log_pid, SIGUSR2) == -1 && errno != ESRCH) errExit("kill log process");
+    }
+
+    close(0);
+    close(1);
+    close(2);
+
     if (st != 0) {
         printf("jail exited with non-zero status: %d\nstopping server ...\n", st);
         kill(server_pid, SIGUSR1);
@@ -762,61 +957,36 @@ void cleanup(int st, void *arg) {
 
 void handle_connection(struct config cfg, int sock) {
 
-    struct rlimit rlim;
-
-    // set resource limits
-    if (cfg.cpu.set) {
-        rlim.rlim_cur = rlim.rlim_max = cfg.cpu.lim;
-        if (0 > setrlimit(RLIMIT_CPU, &rlim))
-            errExit("setrlimit");
-    }
-    if (cfg.mem.set) {
-        rlim.rlim_cur = rlim.rlim_max = cfg.mem.lim;
-        debug(fprintf(stderr, "setting memory limit to %lu\n", cfg.mem.lim));
-#ifndef RLIMIT_AS
-        if (0 > setrlimit(RLIMIT_DATA, &rlim))
-#else
-        if (0 > setrlimit(RLIMIT_AS, &rlim))
-#endif
-            errExit("setrlimit");
-    }
-    if (cfg.proc.set) {
-        debug(fprintf(stderr, "setting process limit to %lu\n", cfg.proc.lim));
-        rlim.rlim_cur = rlim.rlim_max = cfg.proc.lim;
-        if (0 > setrlimit(RLIMIT_NPROC, &rlim)) errExit("setrlimit");
-    }
-
-    int logfd = -1;
-
     if (log_path != NULL) {
         if (strcmp(log_path, "-") != 0) {
             logfd = open(log_path, O_CREAT|O_RDWR|O_APPEND, 0644);
-            if (logfd == -1) err_Exit("open");
+            if (logfd == -1) errExit("open log file");
         } else  {
             logfd = dup(1);
+            if (logfd == -1) errExit("dup 1");
         }
     }
 
     // duplicate socket to stdio
-    if (cfg.in && 0 != dup2(sock, 0)) errExit("dup2");
-    if (cfg.out && 1 != dup2(sock, 1)) errExit("dup2");
-    if (cfg.err && 2 != dup2(sock, 2)) errExit("dup2");
-    if (close(sock)) errExit("close");
+    if (!cfg.nin && 0 != dup2(sock, 0)) errExit("dup2 0");
+    if (!cfg.nout && 1 != dup2(sock, 1)) errExit("dup2 1");
+    if (!cfg.nerr && 2 != dup2(sock, 2)) errExit("dup2 2");
+    if (close(sock)) errExit("close sock");
 
-    if (log_path != NULL) stdin_log(logfd); // #1
+    if (log_path != NULL) stdin_log(logfd);
 
     debug(fprintf(stderr, "installing exit handler ...\n"));
-    if (on_exit(cleanup, NULL)) errExit("on_exit"); // #1 maybe race condition?
+    if (on_exit(cleanup, NULL)) errExit("on_exit cleanup");
 
-    pid_t ppid = getppid();
     parse_config_file(&cfg);
-    enter_jail(&cfg, logfd);
+    enter_jail(&cfg);
     exit(0); // jail exits normally
 }
 
 void stop_server(int sig) {
     debug(fprintf(stderr, "stopping server ...\n"));
-    while (1);
+    pause();
+    exit(EXIT_FAILURE);
 }
 
 int main(int argc, char **argv, char **envp) {
@@ -826,6 +996,8 @@ int main(int argc, char **argv, char **envp) {
     setvbuf(stdin, NULL, _IONBF, 0);
     setvbuf(stdout, NULL, _IONBF, 0);
 
+    umask(0);
+
     pid_t pid;
     struct sigaction sigact;
     int lsock, sock;
@@ -834,7 +1006,7 @@ int main(int argc, char **argv, char **envp) {
         .family = AF_INET6,
         .addr = {.ipv6 = in6addr_any},
         .port = 1024,
-        .in = true, .out = true, .err = true,
+        .nin = false, .nout = false, .nerr = false, .single=false, .no_time=false,
         .cpu = {.set = false}, .mem = {.set = false}, .proc = {.set = false},
         .conn = 1,
         .fss = 262144
@@ -843,7 +1015,7 @@ int main(int argc, char **argv, char **envp) {
     parse_args(argc, argv, &cfg);
 
     debug(fprintf(stderr, "checking that this is running as root ...\n"));
-    if (geteuid() != 0) {puts("you must run this as root."); exit(1);}
+    if (geteuid() != 0) {puts("you must run this as root. if you are looking for the options, try '--help'."); exit(1);}
 
     CTFUID = get_ctf_uid();
     cwd = get_current_dir_name();
@@ -852,7 +1024,7 @@ int main(int argc, char **argv, char **envp) {
     // do not turn dead children into zombies
     memset(&sigact, 0, sizeof(sigact));
     sigact.sa_flags = SA_NOCLDWAIT | SA_NOCLDSTOP;
-    if (sigaction(SIGCHLD, &sigact, 0)) errExit("sigaction");
+    if (sigaction(SIGCHLD, &sigact, 0)) errExit("sigaction SIGCHLD");
 
     debug(fprintf(stderr, "listening on port %d\n", cfg.port));
     lsock = bind_listen(cfg);
@@ -881,25 +1053,25 @@ int main(int argc, char **argv, char **envp) {
         int r = increment_connection(glob_ip, &cfg);
         if (r == EXCEEDED) {
             debug(fprintf(stderr, "dropped. too many connections from this ip.\n"));
-            write(sock, "too many connections from this ip.\n", 34);
-            if (close(sock)) errExit("close");
+            write(sock, "too many connections from this ip.\n", 35);
+            if (close(sock)) errExit("close sock");
             continue;
         }
         if (r == NOSPACE) {
             debug(fprintf(stderr, "dropped. no space in ip table.\n"));
             write(sock, "internal error. try again later.\n", 33);
-            if (close(sock)) errExit("close");
+            if (close(sock)) errExit("close sock");
             continue;
         }
 
         if ((pid = fork())) {
-            if (pid == -1) decrement_connection(glob_ip); // fork failed.
-            if (close(sock)) errExit("close");
+            if (pid == -1) decrement_connection(glob_ip);
+            if (close(sock)) errExit("close sock");
             continue; // parent
         }
 
         // child
-        if (close(lsock)) errExit("close");
+        if (close(lsock)) errExit("close lsock");
         if (0 > setsid()) errExit("setsid");
 
         signal(SIGUSR1, SIG_IGN);
