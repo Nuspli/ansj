@@ -698,10 +698,25 @@ void enter_jail(struct config *cfg) {
     if (unlinkat(cleanup_dirfd, rel_pathname, AT_REMOVEDIR) == -1) errExit("unlinkat jail");
     
     if (cgroup_proc_fd != -1) {
+
         char rel_cgroup_path[PATH_MAX];
+        char killpath[PATH_MAX];
         snprintf(rel_cgroup_path, sizeof(rel_cgroup_path), "sys/fs/cgroup/nsj/%s", jail_name);
+        snprintf(killpath, sizeof(killpath), "sys/fs/cgroup/nsj/%s/cgroup.kill", jail_name);
+
+        debug(fprintf(stderr, "... killing cgroup %s by writing to %s relative to dirfd %d.\n", rel_cgroup_path, killpath, cleanup_dirfd));
+        int fd = openat(cleanup_dirfd, killpath, O_WRONLY);
+        if (fd != -1) {
+            write(fd, "1", 1);
+            close(fd);
+        }
+
         debug(fprintf(stderr, "... removing cgroup directory %s relative to dirfd %d.\n", rel_cgroup_path, cleanup_dirfd));
-        if (unlinkat(cleanup_dirfd, rel_cgroup_path, AT_REMOVEDIR) == -1) errExit("unlinkat cgroup");
+        while (1) {
+            int r = unlinkat(cleanup_dirfd, rel_cgroup_path, AT_REMOVEDIR);
+            if ((r == 0) || (r == -1 && errno == ENOENT)) break;
+            usleep(1000); // wait for cgroup to be removed.
+        }
     }
     
     if (close(cleanup_dirfd) == -1) errExit("close cleanup_dirfd");

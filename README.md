@@ -65,7 +65,7 @@ DO NOT LEAVE ANY VALUES EMPTY. TO OPT OUT OF list OR suid OR copy, USE 'nolist' 
 
 ## Examples
 
-This repo comes with three common use case examples. The [bash](/challenges/default/) challenge may be kept as a way for users to explore the file system and get a feel for the environment. It also aims to show how to correctly use a setup/init binary to customize the jail. The [bof](/challenges/unpriv_bof_example/) challenge is a classic buffer overflow that never executes any code as root. The [rootshell](/challenges/rootshell_example/) challenge gives you a root shell inside the jail to test it's limitations and security. For more information on the examples refer to the source code.
+This repo comes with three common use case examples. The [bash](/challenges/default/) challenge may be kept as a way for users to explore the file system and get a feel for the environment. It also aims to show how to correctly use a setup/init binary to customize the jail. The [bof](/challenges/unpriv_bof_example/) challenge is a classic buffer overflow that never executes any code as root. The [python](/challenges/python_example/) challenge is to demonstrate how to get python code running, but note that there might be complications with python due to the minimal file system of the jail. The [rootshell](/challenges/rootshell_example/) challenge gives you a root shell inside the jail to test it's limitations and security. For more information on the examples refer to the source code directly.
 
 ## How it works
 
