@@ -19,11 +19,11 @@ For more information including the required setup and config format, see [setup]
 ## Options
 
 ```txt
-  -h, --help                       This help text
-  -a, --addr <addr>                IP address to bind to (default :: and 0.0.0.0).
-  -p, --port <port>                TCP port to bind to (default 1024).
-  -s, --single                     Serve a single challenge only. the first line of the config file is used without prompting for the key.
-  -l, --log <path>                 Log all user input and append it to a file named <path>. if <path> is '-' stdout is used.
+  -h,  --help                      This help text
+  -a,  --addr <addr>               IP address to bind to (default :: and 0.0.0.0).
+  -p,  --port <port>               TCP port to bind to (default 1024).
+  -s,  --single                    Serve a single challenge only. the first line of the config file is used without prompting for the key.
+  -l,  --log <path>                Log all user input and append it to a file named <path>. if <path> is '-' stdout is used.
   -nt, --no-time                   Don't tell the user how much time their instance has.
   -ni, --no-stdin                  Don't use the socket as stdin.
   -no, --no-stdout                 Don't use the socket as stdout.
