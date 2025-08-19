@@ -69,13 +69,13 @@ This repo comes with three common use case examples. The [bash](/challenges/defa
 
 ## How it works
 
-To use **namespaces** and **capabilities**, the program must be run as root (or rather requires certain capabilities that usually only root has). The program will also make sure a `ctf` user exists. If it doesn't, it will be created with the password `ctf`.
+To use **namespaces**, **capabilities**, **cgroups**, etc, the program must be run as root (or rather requires certain capabilities that usually only root has). The program will also make sure that a `ctf` user exists. If it doesn't, it will be created with the password `ctf`.
 
-The ynetd based server keeps accepting connections and applies ressource limits. Each connection will then prompt for a key and time out after 5 seconds if no key is entered. The config line containing the key (if it exists) will be parsed.
+The ynetd based server keeps accepting connections and limits the connections per IP. Each connection will then prompt for a key (and time out after 5 seconds if no key is entered). The config line containing the key (if it exists) will be parsed.
 
 The jail is created in a new mount namespace that doesn't share the pid and network namespaces with the host. This means the jailed process can't access the host's network or processes. The new pid namespace along with a fresh /proc mount is important as it prohibits a sandbox escape via setns to the host's pid namespace.
 
-To isolate the filesystem, a jail directory is created in `/tmp/jail-XXXXXX` (where XXXXXX are random characters). This directory is mounted as a `tmpfs` filesystem. Thus, all files created in the jail are backed by a controllable amount of memory. Memory r/w is also very fast. The size of the tmpfs is limited to `256KiB` by default. This is to prevent the jailed process from consuming all of the host's memory. A `pivot_root` syscall is performed to make the jail directory the new root. All references to `/` will now actually refer to `/tmp/jail-XXXXXX`.
+To isolate the filesystem, a jail directory is created in `/tmp/jail-XXXXXX` (where XXXXXX are random characters). This directory is mounted as a `tmpfs` filesystem. Thus, all files created in the jail are backed by a controllable amount of memory. Memory r/w is also very fast. The size of the tmpfs is limited to `256KiB` by default. This is to prevent the jailed process from consuming all of the host's memory. A new cgroup with the same jail name is created if pid/cpu/mem limits are set through the options. A `pivot_root` syscall is performed to make the jail directory the new root. All references to `/` will now actually refer to `/tmp/jail-XXXXXX`.
 
 Now the jail still needs necessary system files to do anything besides exist (like run our challenges). To provide these, `"/bin", "/lib", "/lib64", "/usr", "/etc", "/var", "/sbin"` are bind-mounted **from the host** into the jail as **read-only**. This is done to prevent the jailed process from modifying these files and potentially breaking the host system. It's worth noting that these are the actual directories from the host, so if you have any sensitive information in these directories, it will be readable from inside the jail.
 
@@ -87,9 +87,9 @@ After mounting the basic system files, the challenge directory (`dirname_in_chal
 
 The current working directory is set to the `challenge_dir_path_in_jail`. We have now entered the jail. The challenge binary is spawned as the new `init` process while the parent (which resides in the old pid namespace) will later clean up the jail. The init process is unkillable in the new pid namespace, even by root. A fresh proc mount is created in the new pid namespace. Running `ps` now only shows the init process (bash for instance) and ps.
 
-Root privileges are dropped and heavily restricted using linux capabilities. The `file_in_dir_to_exec` was executed as the ctf user. Once the challenge binary exits or the user closes the network connection or the time is up, the jail and connection are cleaned up.
+Root privileges are dropped and heavily restricted using linux capabilities. The `file_in_dir_to_exec` was executed as the ctf user, but even if retaining uid 0 through an suid setup, the user has very limited capabilities. Once the challenge binary exits or the user closes the network connection or the time is up, the jail, cgroup and connection are cleaned up.
 
-If logging is enabled, all user input will be logged to a log file along with IP address and timestamp before even making it to the challenge.
+If logging is enabled, all user input will be logged to a log file along with an IP address and timestamp before even making it to the challenge.
 
 ## Building
 
@@ -119,11 +119,12 @@ nc localhost 31337
 
 ### Requirements
 
-`libcap`:
+- A regular cgroup v2 mount at `/sys/fs/cgroup`
+- `libcap`:
 
-```bash
-sudo apt install libcap-dev
-```
+  ```bash
+  sudo apt install libcap-dev
+  ```
 
 ### Compile the binary
 

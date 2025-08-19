@@ -827,7 +827,12 @@ void parse_args(size_t argc, char **argv, struct config *cfg) {
 void init_ip_table() {
     // MAP_ANONYMOUS will zero the memory
     ip_map = mmap(NULL, sizeof(struct ip_table), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-    pthread_mutex_init(&ip_map->lock, NULL);
+    if (ip_map == MAP_FAILED) errExit("mmap ip_table");
+    pthread_mutexattr_t mattr;
+    if (pthread_mutexattr_init(&mattr) != 0) errExit("pthread_mutexattr_init");
+    if (pthread_mutexattr_setpshared(&mattr, PTHREAD_PROCESS_SHARED) != 0) errExit("pthread_mutexattr_setpshared");
+    if (pthread_mutex_init(&ip_map->lock, &mattr) != 0) errExit("pthread_mutex_init");
+    pthread_mutexattr_destroy(&mattr);
 }
 
 int increment_connection(const char *ip, struct config *cfg) {
@@ -1000,7 +1005,6 @@ void handle_connection(struct config cfg, int sock) {
 
 void stop_server(int sig) {
     debug(fprintf(stderr, "stopping server ...\n"));
-    pause();
     exit(EXIT_FAILURE);
 }
 
