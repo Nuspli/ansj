@@ -13,7 +13,17 @@ we also want the flag to be in /flag, not in the challenge directory and only re
 
 config:
 :bash:default:init:120:/challenge:list:suid:copy:
+-> challenge key: bash
+-> challenge directory name inside the challenges directory: default
+-> name of the file to be executed on a connection: init
+-> timeout in seconds: 120
+-> directory where the challenge files will be placed inside the jail: /challenge
+-> do make key appear in the help text (list)
+-> do make init an suid binary (suid)
+-> do copy the files in this directory into the jail instead of mounting them readonly (copy)
 
+what this init binary does:
+- temporarily elevates privilages to root
 - copies flag file to /flag.
 - changes flag permissions to only be readable by root.
 - changes ownership and sets suid bit of the second binary (catflag).
@@ -43,7 +53,7 @@ int main(int argc, char **argv) {
     close(src_fd);
     close(dst_fd);
 
-    // changing ownership of /flag is not necessary, as it's already owned by root
+    // changing ownership of /flag is not necessary, as it's already owned by root (we just created it)
     // change permissions of flag to only be readable by root
     chmod("/flag", 0400);
 
@@ -52,7 +62,7 @@ int main(int argc, char **argv) {
     // set suid bit on catflag
     chmod("catflag", 04755);
 
-    // delete everything but catflag from the challenge directory
+    // delete everything but catflag from the /challenge directory
     unlink("init.c");
     unlink("init");
     unlink("catflag.c");
@@ -63,7 +73,7 @@ int main(int argc, char **argv) {
     setgid(ctfgid);
     setuid(ctfuid);
 
-    // launch unprivileged bash
+    // launch bash
     char *const args[] = {"/bin/bash", NULL};
     execve("/bin/bash", args, NULL);
 }

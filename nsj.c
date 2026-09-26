@@ -234,12 +234,12 @@ void drop_capabilities() {
         CAP_BLOCK_SUSPEND,
         CAP_BPF,
         CAP_CHECKPOINT_RESTORE,
-//        CAP_CHOWN, // allow chown
-//        CAP_DAC_OVERRIDE, // allow bypassing file permission checks
-//        CAP_DAC_READ_SEARCH,
+//        CAP_CHOWN, allow chown
+//        CAP_DAC_OVERRIDE, allow bypassing file permission checks
+//        CAP_DAC_READ_SEARCH, allow bypassing file permission checks
         CAP_FOWNER,
         CAP_FSETID,
-        CAP_IPC_LOCK, // mlock bad? drop
+        CAP_IPC_LOCK, // mlock bad? drop.
         CAP_IPC_OWNER,
         CAP_KILL,
         CAP_LEASE,
@@ -252,11 +252,11 @@ void drop_capabilities() {
         CAP_NET_BROADCAST,
         CAP_NET_RAW,
         CAP_PERFMON,
-//        CAP_SETGID, // allow setgid and setgroups
+//        CAP_SETGID, allow setgid and setgroups
         CAP_SETFCAP,
         CAP_SETPCAP,
-//        CAP_SETUID, // allow setuid
-        CAP_SYS_ADMIN, // this absolutely needs to be dropped!
+//        CAP_SETUID, allow setuid
+        CAP_SYS_ADMIN, // this absolutely needs to be dropped!!!
         CAP_SYS_BOOT,
         CAP_SYS_CHROOT,
         CAP_SYS_MODULE,
@@ -530,7 +530,7 @@ void enter_jail(struct config *cfg) {
     debug(fprintf(stderr, "creating jail structure ...\n"));
 
     // mount some important directories into the jail. you can remove or add directories here.
-    // a home directory, some special files under /dev, /proc and /tmp are created later.
+    // a home directory, some special files under /dev, /proc and /tmp are also created.
 
     char *dirs[] = {"/bin", "/lib", "/lib64", "/usr", "/etc", "/var", "/sbin", NULL};
     for (char **dir = dirs; *dir; dir++) {
@@ -588,7 +588,9 @@ void enter_jail(struct config *cfg) {
     if (chmod(exec_path_to_chmod, perms) == -1) errExit("chmod challenge");
 
     debug(fprintf(stderr, "... unmounting old root directory.\n"));
-    if (umount2("/old", MNT_DETACH) == -1) errExit("umount2 old"); // cleaning up jail root is not safe until real root is unmounted!
+    if (umount2("/old", MNT_DETACH) == -1) errExit("umount2 old");
+    // cleaning up jail root is not safe until real root is unmounted!
+    // if you have to manually clean up a jail, MAKE SURE /old is not mounted anymore.
     if (rmdir("/old") == -1) errExit("rmdir old");
 
     debug(fprintf(stderr, "moving the current working directory into the jail.\n"));
@@ -633,6 +635,7 @@ void enter_jail(struct config *cfg) {
     jailed_init_pid = pid;
 
     if (cgroup_proc_fd != -1) {
+        // TODO: is there a race condition here?
         debug(fprintf(stderr, "adding pid %d to jail cgroup %s.\n", pid, jail_name));
         if (dprintf(cgroup_proc_fd, "%d", pid) < 0) errExit("dprintf cgroup_proc_fd");
         if (close(cgroup_proc_fd) == -1) errExit("close cgroup_proc_fd");
@@ -675,7 +678,7 @@ void enter_jail(struct config *cfg) {
             }
         }
             
-        usleep(10000); // do nothing.
+        usleep(10000); // do nothing for 0.01s.
     }
 
     alarm(0);
@@ -715,7 +718,7 @@ void enter_jail(struct config *cfg) {
         while (1) {
             int r = unlinkat(cleanup_dirfd, rel_cgroup_path, AT_REMOVEDIR);
             if ((r == 0) || (r == -1 && errno == ENOENT)) break;
-            usleep(1000); // wait for cgroup to be removed.
+            usleep(1000); // (wait 0.001s) for cgroup to be removed.
         }
     }
     

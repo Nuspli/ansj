@@ -5,7 +5,7 @@
 #include<sys/sendfile.h>
 
 /*
-classic buffer overflow example. if you don't need an suid setup, this is much simpler (and faster).
+classic buffer overflow example. if you don't need an suid setup, this is very straight forward and fast.
 
 config:
 :bof:unpriv_bof_example:bof:30:/challenge:nolist:nosuid:nocopy:
