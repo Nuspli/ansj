@@ -18,15 +18,18 @@
 #include <sys/sendfile.h>
 #include <sys/syscall.h>
 #include <sys/mount.h>
+#include <sys/resource.h>
+#include <sys/sysmacros.h>
 #include <dirent.h>
 #include <grp.h>
 #include <pwd.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
-#include <sys/resource.h>
 #include <pthread.h>
-#include <sys/sysmacros.h>
 #include <poll.h>
+#include <linux/close_range.h>
+#include <linux/sched.h>
+#include <sched.h>
 
 // part of libcap!, link with -lcap
 #include <sys/capability.h>
@@ -39,14 +42,6 @@
 #define errExit(msg) do {perror(msg); exit(EXIT_FAILURE);} while (0)
 #define printfExit(fmt, ...) do {printf(fmt, ##__VA_ARGS__); exit(EXIT_FAILURE);} while (0)
 #define nitems(arr) (sizeof(arr) / sizeof(arr[0]))
-
-struct linux_dirent64 {
-    unsigned long long d_ino;
-    unsigned long long d_off;
-    unsigned short d_reclen;
-    unsigned char d_type;
-    char d_name[];
-};
 
 struct config {
     int family;
@@ -74,7 +69,7 @@ struct config {
     } cfg_file;
 };
 
-#define MAX_IPS 512 // todo: make this an option.
+#define MAX_IPS 512 // TODO: make this an option.
 #define NOSPACE 1
 #define EXCEEDED 2
 
@@ -95,30 +90,6 @@ int CTFUID;
 char *cwd = NULL;
 char *log_path = NULL;
 int MAXTIME = 0;
-
-void close_open_fds() {
-
-    int dir = open("/proc/self/fd", O_RDONLY | O_DIRECTORY);
-    if (dir == -1) errExit("open");
-
-    char buf[0x1000];
-
-    while (1) {
-        int nread = syscall(SYS_getdents64, dir, buf, sizeof(buf));
-        if (nread == -1) errExit("getdents64");
-        if (nread == 0) break; // end of directory
-
-        for (int bpos = 0; bpos < nread;) {
-            struct linux_dirent64 *d = (struct linux_dirent64 *)(buf + bpos);
-            bpos += d->d_reclen;
-
-            int fd = atoi(d->d_name);
-            if (fd == dir || fd <= 2) continue; // skip self (dir) and standard IO (0, 1, 2)
-            if (close(fd) == -1) errExit("close");
-        }
-    }
-    if (close(dir) == -1) errExit("close");
-}
 
 void delete_directory(const char *path) {
 
@@ -435,6 +406,7 @@ int setup_cgroups(const char *jail_name, struct config *cfg) {
     enable_controller("/sys/fs/cgroup/nsj", "memory");
 
     make_directory(cgroup_path);
+    int cgroup_jail_dir_fd = open(cgroup_path, O_PATH);
 
     // set the cgroup limits
     if (cfg->proc.set) {
@@ -467,11 +439,7 @@ int setup_cgroups(const char *jail_name, struct config *cfg) {
         if (close(mem_max_fd) == -1) errExit("close");
     }
 
-    char cgroup_proc_path[PATH_MAX];
-    snprintf(cgroup_proc_path, sizeof(cgroup_proc_path), "%s/cgroup.procs", cgroup_path);
-    int cgroup_proc_fd = open(cgroup_proc_path, O_WRONLY);
-    if (cgroup_proc_fd == -1) errExit("open cgroup_proc");
-    return cgroup_proc_fd;
+    return cgroup_jail_dir_fd;
 }
 
 void enter_jail(struct config *cfg) {
@@ -490,7 +458,7 @@ void enter_jail(struct config *cfg) {
     debug(fprintf(stderr, "... created jail root at \"%s\".\n", new_root));
 
     debug(fprintf(stderr, "setting up cgroup for the jail ...\n"));
-    int cgroup_proc_fd = setup_cgroups(jail_name, cfg);
+    int cgroup_jail_dir_fd = setup_cgroups(jail_name, cfg);
 
     char old_challenge_dir_path[PATH_MAX-2] = {0};
     snprintf(old_challenge_dir_path, sizeof(old_challenge_dir_path), "/old%s/challenges/%s", cwd, cfg->cfg_file.dirname_in_challenges);
@@ -597,12 +565,30 @@ void enter_jail(struct config *cfg) {
     if (chdir(cfg->cfg_file.challenge_dir_path_in_jail) != 0) errExit("chdir challenge_dir");
 
     debug(fprintf(stderr, "starting new init process ...\n"));
-    pid_t pid = fork();
-    debug(fprintf(stderr, "... forked with pid %d.\n", pid));
+    pid_t pid;
+    
+    if (cgroup_jail_dir_fd != -1) {
 
-    if (pid == -1) errExit("fork jail");
+        // use CLONE_INTO_CGROUP instead of forking and then adding the jailed process to the jail cgroup
+        // because doing it like that would be racy.
+
+        struct clone_args cl_args = {0};
+
+        cl_args.flags = CLONE_INTO_CGROUP;
+        cl_args.exit_signal = SIGCHLD;
+        cl_args.cgroup = cgroup_jail_dir_fd;
+
+        pid = syscall(SYS_clone3, &cl_args, sizeof(struct clone_args));
+        debug(fprintf(stderr, "... cloned with pid %d.\n", pid));
+        if (pid == -1) errExit("clone jail");
+    } else {
+        pid = fork();
+        debug(fprintf(stderr, "... forked with pid %d.\n", pid));
+        if (pid == -1) errExit("fork jail");
+    }
+
     if (pid == 0) {
-        // continue as init (pid 1) from here on
+        // continue as init (pid 1) in the new pid namespace from here on
 
         signal(SIGALRM, SIG_IGN);
 
@@ -612,8 +598,10 @@ void enter_jail(struct config *cfg) {
         if (mount(NULL, "/proc", NULL, MS_REMOUNT|MS_BIND|MS_RDONLY, NULL) != 0) errExit("mount proc");
         
         if (close(cleanup_dirfd) == -1) errExit("close");
-        if (cgroup_proc_fd != -1 && close(cgroup_proc_fd) == -1) errExit("close cgroup_proc_fd");
-        close_open_fds(); // just to be safe.
+        if (cgroup_jail_dir_fd != -1 && close(cgroup_jail_dir_fd) == -1) errExit("close cgroup_jail_dir_fd");
+
+        // close open fds except stin/out/err just to be safe
+        if (close_range(3, ~0U, CLOSE_RANGE_UNSHARE) == -1) errExit("close_range");
 
         debug(fprintf(stderr, "... dropping privileges ...\n"));
 
@@ -634,13 +622,6 @@ void enter_jail(struct config *cfg) {
 
     jailed_init_pid = pid;
 
-    if (cgroup_proc_fd != -1) {
-        // TODO: is there a race condition here?
-        debug(fprintf(stderr, "adding pid %d to jail cgroup %s.\n", pid, jail_name));
-        if (dprintf(cgroup_proc_fd, "%d", pid) < 0) errExit("dprintf cgroup_proc_fd");
-        if (close(cgroup_proc_fd) == -1) errExit("close cgroup_proc_fd");
-    }
-    
     struct sigaction sa = {0};
     sa.sa_handler = timeout_handler2;
     sigaction(SIGALRM, &sa, NULL); // do not set SA_RESTART to avoid blocking on recv after timeout.
@@ -686,7 +667,7 @@ void enter_jail(struct config *cfg) {
 
     // if a client closes the connection early, writes to the socket will result in SIGPIPE.
     // this could interfere with debug output, so we ignore it.
-    // (note: you should always use '-se n' for debug output)
+    // (note: you should always use '-ne' for debug output)
     signal(SIGPIPE, SIG_IGN);
     
     debug(fprintf(stderr, "challenge exited with status %d\n", WEXITSTATUS(status)));
@@ -700,7 +681,7 @@ void enter_jail(struct config *cfg) {
     debug(fprintf(stderr, "... removing jail directory at %s relative to dirfd %d.\n", rel_pathname, cleanup_dirfd));
     if (unlinkat(cleanup_dirfd, rel_pathname, AT_REMOVEDIR) == -1) errExit("unlinkat jail");
     
-    if (cgroup_proc_fd != -1) {
+    if (cgroup_jail_dir_fd != -1) {
 
         char rel_cgroup_path[PATH_MAX];
         char killpath[PATH_MAX];
