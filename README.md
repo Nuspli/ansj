@@ -65,7 +65,7 @@ DO NOT LEAVE ANY VALUES EMPTY. TO OPT OUT OF list OR suid OR copy, USE 'nolist' 
 
 ## Examples
 
-This repo comes with three common use case examples. The [bash](/challenges/default/) challenge may be kept as a way for users to explore the file system and get a feel for the environment. It also aims to show **how to correctly use a setup/init binary** to customize the jail and create an suid setup. The [bof](/challenges/unpriv_bof_example/) challenge is a classic buffer overflow that never executes any code as root. The [python](/challenges/python_example/) challenge is to demonstrate how to get python code running, but note that there might be complications with python due to the minimal file system of the jail. The [rootshell](/challenges/rootshell_example/) challenge gives you a root shell inside the jail to test its limitations and security. For more information on the examples refer to the source code directly.
+This repo comes with four common use case examples. The [bash](/challenges/default/) challenge may be kept as a way for users to explore the file system and get a feel for the environment. It also aims to show **how to correctly use a setup/init binary** to customize the jail and create an suid setup. The [bof](/challenges/unpriv_bof_example/) challenge is a classic buffer overflow that never executes any code as root. The [python](/challenges/python_example/) challenge is to demonstrate how to get python code running, but note that there might be complications with python due to the minimal file system of the jail. The [rootshell](/challenges/rootshell_example/) challenge gives you a root shell inside the jail to test its limitations and security. For more information on the examples refer to the source code directly.
 
 ## How it works
 
@@ -79,7 +79,7 @@ To isolate the filesystem, a jail directory is created in `/tmp/jail-XXXXXX` (wh
 
 Now the jail still needs necessary system files to do anything besides exist (like run our challenges). To provide these, `"/bin", "/lib", "/lib64", "/usr", "/etc", "/var", "/sbin"` are bind-mounted **from the host** into the jail as **read-only**. This is done to prevent the jailed process from modifying these files and potentially breaking the host system. It's worth noting that these are the actual directories from the host, so if you have any sensitive information in these directories, it will be readable from inside the jail.
 
-### **Including `/etc/shadow`!**
+!!! **Including `/etc/shadow`!** !!!
 
 This is why you should use this in combination with **Docker**, a chrooted busybox, a VM, or something similar.
 
@@ -87,9 +87,9 @@ After mounting the basic system files, the challenge directory (`dirname_in_chal
 
 The current working directory is set to the `challenge_dir_path_in_jail`. We have now entered the jail. The challenge binary is spawned as the new `init` process while the parent (which resides in the old pid namespace) will later clean up the jail. The init process is unkillable in the new pid namespace, even by root. A fresh proc mount is created in the new pid namespace. Running `ps` now only shows the init process (bash for instance) and ps.
 
-Root privileges are dropped and heavily restricted using linux capabilities. The `file_in_dir_to_exec` was executed as the ctf user, but even if retaining uid 0 through an suid setup, the user has very limited capabilities. Once the challenge binary exits or the user closes the network connection or the time is up, the jail, cgroup and connection are cleaned up.
+Root privileges are dropped and heavily restricted using linux capabilities. The `file_in_dir_to_exec` is executed as the ctf user, but even if retaining uid 0 through an suid setup, the user has very limited capabilities. Once the challenge binary exits or the user closes the network connection or the time is up, the jail, cgroup and connection are cleaned up.
 
-If logging is enabled, all user input will be logged to a log file along with an IP address and timestamp before even making it to the challenge.
+If logging is enabled, all user input is logged to a log file along with an IP address and timestamp before even making it to the challenge.
 
 ## Building
 

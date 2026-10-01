@@ -395,12 +395,12 @@ int setup_cgroups(const char *jail_name, struct config *cfg) {
         debug(fprintf(stderr, "no cgroup limits set, skipping cgroup setup.\n"));
         return -1; // no cgroup limits set, skip setup
     }
-
+    
     char cgroup_path[PATH_MAX];
     snprintf(cgroup_path, sizeof(cgroup_path), "/sys/fs/cgroup/nsj/%s", jail_name);
-
-    make_directory("/sys/fs/cgroup/nsj");
     
+    // TODO: move this from per connection code to the server setup to avoid unnecessary overwrites..?
+    make_directory("/sys/fs/cgroup/nsj");
     enable_controller("/sys/fs/cgroup/nsj", "pids");
     enable_controller("/sys/fs/cgroup/nsj", "cpu");
     enable_controller("/sys/fs/cgroup/nsj", "memory");
