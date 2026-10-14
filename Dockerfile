@@ -43,6 +43,7 @@ CMD ["./nsj", "-p", "31337", "-l", "log", "-lp", "16", "-lm", "10485760", "-lu",
 #   serve multiple challenges through key system
 #   tell users how much time they have left
 #   use socket as stdin/out/err
+#   allow a maximum of 512 distinct IPs to connect at once
 
 
 # build:                    sudo docker build -t ansj .

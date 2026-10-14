@@ -37,6 +37,7 @@ For more information including the required setup and config format, see [setup]
   -lp, --limit-processes <lim>     Limit the number of processes per connection (default unchanged).
   -lc, --limit-connections <lim>   Limit the number of concurrent connections per ip (default 1).
   -lf, --limit-tmpfs <lim>         Limit the size of tmpfs in bytes for each connection (default 262144 aka 256KiB).
+  -li, --limit-ip-entries <lim>    Limit the number of unique IPs that can have a connection at the same time (default 512).
 ```
 
 ## Setup
@@ -48,7 +49,7 @@ The `config` file is used to set up the files inside the jail (flag, binaries) a
 Every line in the config must follow the format:
 
 ```txt
-:key:dirname_in_challenges:file_in_dir_to_exec:timeout_in_seconds:challenge_dir_path_in_jail:list/nolist:suid/nosuid:copy/nocopy:
+:key:dirname_in_challenges:file_in_dir_to_exec:timeout_in_seconds:challenge_dir_path_in_jail:list/nolist:suid/nosuid:copy/nocopy:secret:
 ```
 
 | Field | Description |
@@ -61,9 +62,10 @@ Every line in the config must follow the format:
 | **list/nolist** | If this value is 'list', the key will be listed when the user types 'help'. |
 | **suid/nosuid** | If this value is 'suid', the file_in_dir_to_exec will be made suid root. If copy is not set, this will make the file suid root outside of the jail too. YOU PROBABLY DON'T WANT THIS. USE copy FOR SUID CHALLENGES. |
 | **copy/nocopy** | If this value is 'copy', the challenge directory will be copied into the jail instead of bind-mounted. This may be slower for challenges with many files. |
+| **secret** | OPTIONAL secret value passed to the challenge executable as the first argument (argv[1]). The final ':' may be omitted if 'secret' should end in a newline.
 
 ```txt
-DO NOT LEAVE ANY VALUES EMPTY. TO OPT OUT OF list OR suid OR copy, USE 'nolist' OR 'nosuid' OR 'nocopy' OR LITERALLY ANY OTHER STRING. DO NOT DO THIS: 
+DO NOT LEAVE ANY VALUES except 'secret' EMPTY. TO OPT OUT OF list OR suid OR copy, USE 'nolist' OR 'nosuid' OR 'nocopy' OR LITERALLY ANY OTHER STRING. DO NOT DO THIS: 
 :key:dirname_in_challenges:file_in_dir_to_exec::challenge_dir_path_in_jail::::
 ```
 
@@ -99,7 +101,7 @@ connect:
 nc localhost 31337
 ```
 
-## Manual setup
+## Manual setup (no Docker)
 
 Make sure you have read and understood the [examples](#examples) and [how it works](#how-it-works).
 
@@ -190,13 +192,14 @@ If you just want to execute a setup.sh script as root instead of doing the entir
 
 #### `copy` vs. `nocopy` and instance speed
 
-Copying the challenge files into each jail on each connection takes time and also eats memory as part of the tmpfs limit. This is an issue when challenges require large files (for example a custom libc/ld) in the challenge directory.
+Copying the challenge files into each jail on each connection takes time and also eats memory as part of the tmpfs limit. This can cause performance issues when challenges require large files (for example a custom libc/ld) in the challenge directory.
 
 When `nocopy` is specified, the entire challenge directory is mounted read-only, which is very fast, but prevents a setup binary from making modifications to the challenge directory (like unlinking itself or moving a flag file). For this reason, it proves to be difficult to create a fast suid setup similar to the [default](/challenges/default/) example when a custom libc is also required.
 
-There is currently no good solution to this issue, but I may add something in the future.
+~~There is currently no good solution to this issue, but I may add something in the future.~~ There is now an option to pass a secret string to the challenge binary (like init) through argv[1]. You can see this used in the [buffer overflow](/challenges/unpriv_bof_example/) example, though not to its full extent.
 
-Of course you can use `nocopy` and drop the user directly into the challenge instead of a shell, but then they won't be able to inspect the challenge files. A possible workaround is to make a separate entry in the config and hint towards the option to download the challenge files using a download key. You may implement such a setup like this:
+
+Of course you can also use `nocopy` and drop the user directly into the challenge instead of a shell, but then they won't be able to inspect the challenge files. A possible workaround is to make a separate entry in the config and hint towards the option to download the challenge files using a download key. You may implement such a setup like this:
 
 init.c:
 ```c

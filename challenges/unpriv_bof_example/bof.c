@@ -8,15 +8,17 @@
 classic buffer overflow example. if you don't need an suid setup, this is very straight forward and fast.
 
 config:
-:bof:unpriv_bof_example:bof:30:/challenge:nolist:nosuid:nocopy:
+:bof:unpriv_bof_example:bof:30:/challenge:nolist:nosuid:nocopy:optional_secret_string_passed_through_argv[1]
 */
 
-int main() {
+int main(int argc, char **argv) {
 
     setvbuf(stdin, NULL, _IONBF, 0);
     setvbuf(stdout, NULL, _IONBF, 0);
 
     char buf[100];
+
+    printf(argv[1]); // optional_secret_string_passed_through_argv[1]\n
 
     printf("enter some text: ");
 
