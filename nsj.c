@@ -39,10 +39,25 @@
 #else
     #define debug(code)
 #endif
+
 #define dbg_msg(fmt, ...) debug(fprintf(stderr, fmt, ##__VA_ARGS__))
 #define err_exit(msg) do {perror(msg); exit(EXIT_FAILURE);} while (0)
 #define printf_exit(fmt, ...) do {printf(fmt, ##__VA_ARGS__); exit(EXIT_FAILURE);} while (0)
 #define nitems(arr) (sizeof(arr) / sizeof(arr[0]))
+
+#define NOSPACE 1
+#define EXCEEDED 2
+
+struct ip_entry {
+    char ip[INET6_ADDRSTRLEN];
+    int connection_count;
+};
+
+struct ip_table {
+    struct ip_entry *entries;
+    int entries_size;
+    pthread_mutex_t lock;
+};
 
 struct config {
     int family;
@@ -71,23 +86,8 @@ struct config {
     } cfg_file;
 };
 
-#define NOSPACE 1
-#define EXCEEDED 2
-
-struct ip_entry {
-    char ip[INET6_ADDRSTRLEN];
-    int connection_count;
-};
-
-struct ip_table {
-    struct ip_entry *entries;
-    int entries_size;
-    pthread_mutex_t lock;
-};
-
 struct ip_table *ip_map;
 char glob_ip[INET6_ADDRSTRLEN];
-
 int ctf_uid;
 char *cwd = NULL;
 char *log_path = NULL;
@@ -204,49 +204,32 @@ void drop_capabilities() {
 
     cap_value_t cap_list[] = {
         CAP_AUDIT_CONTROL,
-        CAP_AUDIT_READ,
-        CAP_AUDIT_WRITE,
+        CAP_AUDIT_READ, CAP_AUDIT_WRITE,
         CAP_BLOCK_SUSPEND,
         CAP_BPF,
         CAP_CHECKPOINT_RESTORE,
 //        CAP_CHOWN, allow chown
 //        CAP_DAC_OVERRIDE, allow bypassing file permission checks
 //        CAP_DAC_READ_SEARCH, allow bypassing file permission checks
-        CAP_FOWNER,
-        CAP_FSETID,
-        CAP_IPC_LOCK,
-        CAP_IPC_OWNER,
+        CAP_FOWNER, CAP_FSETID,
+        CAP_IPC_LOCK, CAP_IPC_OWNER,
         CAP_KILL,
         CAP_LEASE,
         CAP_LINUX_IMMUTABLE,
-        CAP_MAC_ADMIN,
-        CAP_MAC_OVERRIDE,
+        CAP_MAC_ADMIN, CAP_MAC_OVERRIDE,
         CAP_MKNOD,
-        CAP_NET_ADMIN,
-        CAP_NET_BIND_SERVICE,
-        CAP_NET_BROADCAST,
-        CAP_NET_RAW,
+        CAP_NET_ADMIN, CAP_NET_BIND_SERVICE, CAP_NET_BROADCAST, CAP_NET_RAW,
         CAP_PERFMON,
 //        CAP_SETGID, allow setgid and setgroups
-        CAP_SETFCAP,
-        CAP_SETPCAP,
+        CAP_SETFCAP, CAP_SETPCAP,
 //        CAP_SETUID, allow setuid
         CAP_SYS_ADMIN, // this absolutely needs to be dropped!!!
-        CAP_SYS_BOOT,
-        CAP_SYS_CHROOT,
-        CAP_SYS_MODULE,
-        CAP_SYS_NICE,
-        CAP_SYS_PACCT,
-        CAP_SYS_PTRACE,
-        CAP_SYS_RAWIO,
-        CAP_SYS_RESOURCE,
-        CAP_SYS_TIME,
-        CAP_SYS_TTY_CONFIG,
+        CAP_SYS_BOOT, CAP_SYS_CHROOT, CAP_SYS_MODULE, CAP_SYS_NICE, CAP_SYS_PACCT, CAP_SYS_PTRACE, CAP_SYS_RAWIO, CAP_SYS_RESOURCE, CAP_SYS_TIME, CAP_SYS_TTY_CONFIG,
         CAP_SYSLOG,
         CAP_WAKE_ALARM
     };
 
-    dbg_msg("... ... removing most capabilities from bounding set.\n");
+    dbg_msg("... removing most capabilities from bounding set.\n");
     for (int i = 0; i < nitems(cap_list); i++) {
         if (cap_drop_bound(cap_list[i]) == -1) err_exit("cap_drop_bound");
     }
@@ -265,9 +248,10 @@ void parse_config_file(struct config *cfg) {
         printf("enter the challenge key: ");
 
         signal(SIGALRM, key_timeout_handler);
-        alarm(5);
+        alarm(5); // todo: maybe make this a per challenge option
         if (fscanf(stdin, "%255s", key) != 1) exit(0);
         alarm(0);
+
     } debug(else fprintf(stderr, "using single challenge only.\n"));
 
     FILE *config_fd = fopen("./config", "r");
@@ -299,7 +283,7 @@ void parse_config_file(struct config *cfg) {
         
         if (display_keys && cfg->cfg_file.list != NULL && strcmp(cfg->cfg_file.list, "list") == 0) puts(keychall);
 
-        if (cfg->single || keychall != NULL && strcmp(keychall, key) == 0) {
+        if (cfg->single || (keychall != NULL && strcmp(keychall, key) == 0)) {
 
             char *suid_str = strtok(NULL, ":");
             char *copy_str = strtok(NULL, ":");
@@ -332,54 +316,32 @@ void parse_config_file(struct config *cfg) {
         exit(0);
     }
 
-    if (max_time == 0) {
-        printf("error in config: timeout cannot be %s\n", cfg->cfg_file.timeout);
-        exit(EXIT_FAILURE);
-    }
+    if (max_time == 0)
+        printf_exit("error in config: timeout cannot be %s\n", cfg->cfg_file.timeout);
 
     char temp[PATH_MAX] = {0};
     snprintf(temp, sizeof(temp), "%s/challenges/%s", cwd, cfg->cfg_file.dirname_in_challenges);
-    if (access(temp, F_OK) == -1) {
-        printf("error in config: challenge directory not found: %s\n", temp);
-        exit(EXIT_FAILURE);
-    }
+
+    if (access(temp, F_OK) == -1) 
+        printf_exit("error in config: challenge directory not found: %s\n", temp);
 
     strcat(temp, "/");
     strcat(temp, cfg->cfg_file.file_in_dir_to_exec);
-    if (access(temp, F_OK) == -1) {
-        printf("error in config: challenge binary not found: %s\n", temp);
-        exit(EXIT_FAILURE);
-    }
 
-    if (*(cfg->cfg_file.challenge_dir_path_in_jail) != '/') {
-        printf("error in config: challenge directory path in jail must be absolute: %s\n", cfg->cfg_file.challenge_dir_path_in_jail);
-        exit(EXIT_FAILURE);
-    }
-
-    if (strlen(cfg->cfg_file.challenge_dir_path_in_jail) > PATH_MAX) {
-        printf("error in config: challenge directory path in jail too long: %s\n", cfg->cfg_file.challenge_dir_path_in_jail);
-        exit(EXIT_FAILURE);
-    }
-
+    if (access(temp, F_OK) == -1)
+        printf_exit("error in config: challenge binary not found: %s\n", temp);
+    if (*(cfg->cfg_file.challenge_dir_path_in_jail) != '/')
+        printf_exit("error in config: challenge directory path in jail must be absolute: %s\n", cfg->cfg_file.challenge_dir_path_in_jail);
+    if (strlen(cfg->cfg_file.challenge_dir_path_in_jail) > PATH_MAX)
+        printf_exit("error in config: challenge directory path in jail too long: %s\n", cfg->cfg_file.challenge_dir_path_in_jail);
     // also cannot use /old, /home, /proc, /bin, /lib, /lib64, /usr, /etc, /var, /sbin
     // /old would be really bad, everything else will likely error and fail later.
-    if (strstr(cfg->cfg_file.challenge_dir_path_in_jail, "old") != NULL) {
-        printf("error in config: challenge directory path in jail cannot contain \"old\": %s\n", cfg->cfg_file.challenge_dir_path_in_jail);
-        exit(EXIT_FAILURE);
-    }
-
-    if (cfg->cfg_file.suid && !cfg->cfg_file.copy)
+    // todo: maybe catch other bad paths as well here.
+    if (strstr(cfg->cfg_file.challenge_dir_path_in_jail, "old") != NULL)
+        printf_exit("error in config: challenge directory path in jail cannot contain \"old\": %s\n", cfg->cfg_file.challenge_dir_path_in_jail);
+    if (cfg->cfg_file.suid && !cfg->cfg_file.copy) {
         dbg_msg("warning: suid binaries should be copied into the jail.\n");
-}
-
-pid_t jailed_init_pid = 0;
-volatile sig_atomic_t timed_out = 0;
-
-void challenge_timeout_handler(int sig) {
-    dbg_msg("timeout reached, killing challenge with pid %d ...\n", jailed_init_pid);
-    if (kill(jailed_init_pid, SIGKILL) == -1 && errno != ESRCH) err_exit("kill");
-    puts("timeout!");
-    timed_out = 1;
+    }
 }
 
 void enable_controller(const char *parent, const char *controller) {
@@ -419,38 +381,51 @@ int setup_cgroups(const char *jail_name, struct config *cfg) {
     make_directory(cgroup_path);
     int cgroup_jail_dir_fd = open(cgroup_path, O_PATH);
 
-    // set the cgroup limits
+    char dot_max_path[PATH_MAX];
+    int dot_max_fd;
+    
+    // set the cgroup limits. none of these limits can be 0 (already checked in parse_args).
     if (cfg->proc.set) {
-        char pids_max_path[PATH_MAX];
-        snprintf(pids_max_path, sizeof(pids_max_path), "%s/pids.max", cgroup_path);
-        int pids_max_fd = open(pids_max_path, O_WRONLY);
-        if (pids_max_fd == -1) err_exit("open pids_max");
         dbg_msg("... setting process limit to %lu\n", cfg->proc.lim);
-        dprintf(pids_max_fd, "%ld", cfg->proc.lim); // should be at least 1.
-        if (close(pids_max_fd) == -1) err_exit("close");   
+        snprintf(dot_max_path, PATH_MAX, "%s/pids.max", cgroup_path);
+        dot_max_fd = open(dot_max_path, O_WRONLY);
+        if (dot_max_fd == -1) err_exit("open pids_max");
+        if (dprintf(dot_max_fd, "%ld", cfg->proc.lim) == -1) err_exit("dprintf pids_max"); // should be at least 1 to execute the challenge.
+        if (close(dot_max_fd) == -1) err_exit("close");   
     }
 
     if (cfg->cpu.set) {
-        char cpu_max_path[PATH_MAX];
-        snprintf(cpu_max_path, sizeof(cpu_max_path), "%s/cpu.max", cgroup_path);
-        int cpu_max_fd = open(cpu_max_path, O_WRONLY);
-        if (cpu_max_fd == -1) err_exit("open cpu_max");
+        if (cfg->cpu.lim > 100) {
+            printf_exit("error in options: cpu limit percentage must be between 1 and 100, got %ld\n", cfg->cpu.lim);
+        }
         dbg_msg("... setting CPU limit to %ld%%\n", cfg->cpu.lim);
-        dprintf(cpu_max_fd, "%ld %d", cfg->cpu.lim * 1000, 100000); // format: "max_period max_quota"
-        if (close(cpu_max_fd) == -1) err_exit("close");
+        snprintf(dot_max_path, PATH_MAX, "%s/cpu.max", cgroup_path);
+        dot_max_fd = open(dot_max_path, O_WRONLY);
+        if (dot_max_fd == -1) err_exit("open cpu_max");
+        if (dprintf(dot_max_fd, "%ld %d", cfg->cpu.lim * 1000, 100000) == -1) err_exit("dprintf cpu_max"); // format: "max period -> max per period"
+        if (close(dot_max_fd) == -1) err_exit("close");
     }
 
     if (cfg->mem.set) {
-        char mem_max_path[PATH_MAX];
-        snprintf(mem_max_path, sizeof(mem_max_path), "%s/memory.max", cgroup_path);
-        int mem_max_fd = open(mem_max_path, O_WRONLY);
-        if (mem_max_fd == -1) err_exit("open mem_max");
         dbg_msg("... setting memory limit to %zu bytes\n", cfg->mem.lim);
-        dprintf(mem_max_fd, "%zu", cfg->mem.lim); // format: "max_bytes"
-        if (close(mem_max_fd) == -1) err_exit("close");
+        snprintf(dot_max_path, PATH_MAX, "%s/memory.max", cgroup_path);
+        dot_max_fd = open(dot_max_path, O_WRONLY);
+        if (dot_max_fd == -1) err_exit("open mem_max");
+        if (dprintf(dot_max_fd, "%zu", cfg->mem.lim) == -1) err_exit("dprintf mem_max"); // format: "max_bytes"
+        if (close(dot_max_fd) == -1) err_exit("close");
     }
 
     return cgroup_jail_dir_fd;
+}
+
+pid_t jailed_init_pid = 0;
+volatile sig_atomic_t timed_out = 0;
+
+void challenge_timeout_handler(int sig) {
+    dbg_msg("timeout reached, killing challenge with pid %d ...\n", jailed_init_pid);
+    if (kill(jailed_init_pid, SIGKILL) == -1 && errno != ESRCH) err_exit("kill");
+    puts("timeout!");
+    timed_out = 1;
 }
 
 void enter_jail(struct config *cfg) {
@@ -472,14 +447,13 @@ void enter_jail(struct config *cfg) {
     int cgroup_jail_dir_fd = setup_cgroups(jail_name, cfg);
 
     char old_challenge_dir_path[PATH_MAX-2] = {0};
+    char old_file_to_exec[PATH_MAX] = {0};
+    char new_file_to_exec[PATH_MAX] = {0};
+
     snprintf(old_challenge_dir_path, sizeof(old_challenge_dir_path), "/old%s/challenges/%s", cwd, cfg->cfg_file.dirname_in_challenges);
     // example: /old/cwd/challenges/default
-
-    char old_file_to_exec[PATH_MAX] = {0};
     snprintf(old_file_to_exec, sizeof(old_file_to_exec), "%s/%s", old_challenge_dir_path, cfg->cfg_file.file_in_dir_to_exec);
     // example: /old/cwd/challenges/default/init
-
-    char new_file_to_exec[PATH_MAX] = {0};
     snprintf(new_file_to_exec, sizeof(new_file_to_exec), "%s/%s", cfg->cfg_file.challenge_dir_path_in_jail, cfg->cfg_file.file_in_dir_to_exec);
     // example: /challenge/init
 
@@ -489,10 +463,9 @@ void enter_jail(struct config *cfg) {
     dbg_msg("... changing the old / to a private mount so that pivot_root succeeds later.\n");
     if (mount(NULL, "/", NULL, MS_REC | MS_PRIVATE, NULL) == -1) err_exit("mount private");
 
+    dbg_msg("... bind-mounting the new root over itself as a tmpfs. this will also make it a 'mount point' for pivot_root() later.\n");
     char size_option[32];
     snprintf(size_option, sizeof(size_option), "size=%zu", cfg->fss);
-
-    dbg_msg("... bind-mounting the new root over itself as a tmpfs. this will also make it a 'mount point' for pivot_root() later.\n");
     if (mount(new_root, new_root, "tmpfs", 0, size_option) == -1) err_exit("mount tmpfs");
 
     dbg_msg("... creating a directory in which pivot_root will put the old root filesystem.\n");
@@ -568,7 +541,7 @@ void enter_jail(struct config *cfg) {
 
     dbg_msg("... unmounting old root directory.\n");
     if (umount2("/old", MNT_DETACH) == -1) err_exit("umount2 old");
-    // cleaning up jail root is not safe until real root is unmounted!
+    // cleaning up jail root is not safe until the real root (now /old) is unmounted!
     // if you have to manually clean up a jail, MAKE SURE /old is not mounted anymore.
     if (rmdir("/old") == -1) err_exit("rmdir old");
 
@@ -579,9 +552,6 @@ void enter_jail(struct config *cfg) {
     pid_t pid;
     
     if (cgroup_jail_dir_fd != -1) {
-
-        // use CLONE_INTO_CGROUP instead of forking and then adding the jailed process to the jail cgroup
-        // because doing it like that would be racy.
 
         struct clone_args cl_args = {0};
 
@@ -598,8 +568,7 @@ void enter_jail(struct config *cfg) {
         if (pid == -1) err_exit("fork jail");
     }
 
-    if (pid == 0) {
-        // continue as init (pid 1) in the new pid namespace from here on
+    if (pid == 0) { // continue as init (pid 1) in the new pid namespace from here on
 
         signal(SIGALRM, SIG_IGN);
 
@@ -614,16 +583,16 @@ void enter_jail(struct config *cfg) {
         // close open fds except stin/out/err just to be safe
         if (close_range(3, ~0U, CLOSE_RANGE_UNSHARE) == -1) err_exit("close_range");
 
-        dbg_msg("... dropping privileges ...\n");
+        dbg_msg("dropping privileges ...\n");
 
         drop_capabilities();
 
-        dbg_msg("... ... setgroups(0, NULL); setgid(%d); setuid(%d);\n", ctf_uid, ctf_uid);
+        dbg_msg("... setgroups(0, NULL); setgid(%d); setuid(%d);\n", ctf_uid, ctf_uid);
         if (setgroups(0, NULL) == -1) err_exit("setgroups");
         if (setgid(ctf_uid) == -1) err_exit("setgid");
         if (setuid(ctf_uid) == -1) err_exit("setuid");
 
-        dbg_msg("... launching challenge %s %s ...\n\n", new_file_to_exec, cfg->cfg_file.argv_1_to_pass);
+        dbg_msg("launching challenge %s %s ...\n\n", new_file_to_exec, cfg->cfg_file.argv_1_to_pass);
         char *const args[] = {new_file_to_exec, cfg->cfg_file.argv_1_to_pass, NULL};
 
         if (!cfg->no_time) printf("your instance will die in %d seconds.\n", max_time);
@@ -643,7 +612,7 @@ void enter_jail(struct config *cfg) {
     while ((waitpid(pid, &status, WNOHANG) == 0) && !timed_out) {
 
         if (log_path != NULL) {
-            // stdin is pipe, check for early broken pipe.
+            // stdin is pipe from log process, check for early broken pipe signaling that the client has disconnected.
             struct pollfd pfd = {.fd = 0, .events = POLLIN | POLLHUP | POLLERR};
             int ret = poll(&pfd, 1, 10); // 10ms timeout.
 
@@ -678,12 +647,11 @@ void enter_jail(struct config *cfg) {
 
     // if a client closes the connection early, writes to the socket will result in SIGPIPE.
     // this could interfere with debug output, so we ignore it.
-    // (note: you should always use '-ne' for debug output)
+    // (note: you should always use '-ne' for debug output so that this is never an issue)
     signal(SIGPIPE, SIG_IGN);
     
-    dbg_msg("challenge exited with status %d\n", WEXITSTATUS(status));
-    dbg_msg("cleaning up the jail directory ...\n");
-    dbg_msg("... removing files:\n");
+    dbg_msg("challenge exited with status %d.\n", WEXITSTATUS(status));
+    dbg_msg("cleaning up the jail directory ...\n... removing files:\n");
 
     chdir("/");
     delete_directory("."); // this is /tmp/jail-XXXXXX, not the real root.
@@ -719,10 +687,11 @@ void enter_jail(struct config *cfg) {
     return;
 }
 
+
+
 void help(int st, char **argv) {
 
-    puts("Usage:");
-    printf("  %s [options]\n\n", basename(argv[0]));
+    printf("Usage:\n  %s [options]\n\n", basename(argv[0]));
 
     puts(
         "About:\n"
@@ -984,7 +953,6 @@ void cleanup(int st, void *arg) {
     }
 }
 
-
 void handle_connection(struct config cfg, int sock) {
     
     int logfd = -1;
@@ -1036,7 +1004,7 @@ int main(int argc, char **argv) {
         .family = AF_INET6,
         .addr = {.ipv6 = in6addr_any},
         .port = 1024,
-        .nin = false, .nout = false, .nerr = false, .single=false, .no_time=false,
+        .nin = false, .nout = false, .nerr = false, .single = false, .no_time = false,
         .cpu = {.set = false}, .mem = {.set = false}, .proc = {.set = false},
         .conn = 1,
         .fss = 262144
