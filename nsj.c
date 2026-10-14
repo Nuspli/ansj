@@ -110,7 +110,9 @@ void delete_directory(const char *path) {
         if (lstat(full_path, &st) == -1) err_exit("lstat");
 
         // unmount any mounted directories. it's fine if this fails.
-        if (umount2(full_path, MNT_DETACH) == 0) dbg_msg("... unmounted: %s\n", full_path);
+        if (umount2(full_path, MNT_DETACH) == 0) {
+            dbg_msg("... unmounted: %s\n", full_path);
+        }
 
         if (S_ISDIR(st.st_mode)) {
             // recursively delete subdirectory
@@ -424,7 +426,7 @@ int setup_cgroups(const char *jail_name, struct config *cfg) {
         int pids_max_fd = open(pids_max_path, O_WRONLY);
         if (pids_max_fd == -1) err_exit("open pids_max");
         dbg_msg("... setting process limit to %lu\n", cfg->proc.lim);
-        dprintf(pids_max_fd, "%d", cfg->proc.lim); // should be at least 1.
+        dprintf(pids_max_fd, "%ld", cfg->proc.lim); // should be at least 1.
         if (close(pids_max_fd) == -1) err_exit("close");   
     }
 
@@ -433,8 +435,8 @@ int setup_cgroups(const char *jail_name, struct config *cfg) {
         snprintf(cpu_max_path, sizeof(cpu_max_path), "%s/cpu.max", cgroup_path);
         int cpu_max_fd = open(cpu_max_path, O_WRONLY);
         if (cpu_max_fd == -1) err_exit("open cpu_max");
-        dbg_msg("... setting CPU limit to %d%%\n", cfg->cpu.lim);
-        dprintf(cpu_max_fd, "%d %d", cfg->cpu.lim * 1000, 100000); // format: "max_period max_quota"
+        dbg_msg("... setting CPU limit to %ld%%\n", cfg->cpu.lim);
+        dprintf(cpu_max_fd, "%ld %d", cfg->cpu.lim * 1000, 100000); // format: "max_period max_quota"
         if (close(cpu_max_fd) == -1) err_exit("close");
     }
 
@@ -1017,7 +1019,7 @@ void stop_server(int sig) {
     exit(EXIT_FAILURE);
 }
 
-int main(int argc, char **argv, char **envp) {
+int main(int argc, char **argv) {
 
     signal(SIGUSR1, stop_server);
 
